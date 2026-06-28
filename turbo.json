@@ -4,6 +4,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": ["VITE_SERVER_URL"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["dist/**"]
     },
@@ -25,6 +26,7 @@
     },
     "db:migrate": {
       "cache": false,
+      "env": ["DATABASE_WRITER_URL"],
       "persistent": true
     },
     "db:studio": {

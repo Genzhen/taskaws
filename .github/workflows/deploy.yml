@@ -261,6 +261,28 @@ jobs:
           aws s3 sync apps/web/build/client s3://${{ secrets.AWS_S3_BUCKET }} --delete
           aws s3 cp apps/web/build/client/index.html s3://${{ secrets.AWS_S3_BUCKET }}/index.html
 
+      - name: Allow public reads for S3 website
+        run: |
+          aws s3api put-public-access-block \
+            --bucket ${{ secrets.AWS_S3_BUCKET }} \
+            --public-access-block-configuration \
+              BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+
+          aws s3api put-bucket-policy \
+            --bucket ${{ secrets.AWS_S3_BUCKET }} \
+            --policy '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "PublicReadForStaticWebsite",
+                  "Effect": "Allow",
+                  "Principal": "*",
+                  "Action": "s3:GetObject",
+                  "Resource": "arn:aws:s3:::${{ secrets.AWS_S3_BUCKET }}/*"
+                }
+              ]
+            }'
+
       - name: Configure S3 for SPA routing
         run: |
           aws s3api put-bucket-website \

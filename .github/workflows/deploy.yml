@@ -10,6 +10,8 @@ name: Deploy to AWS
 # Required GitHub Secrets:
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY        — deploy credentials
 #   AWS_REGION                                      — (optional) default us-east-1
+#   VPC_ID, SUBNET_A, SUBNET_B                      — existing VPC private Lambda subnets
+#   DATABASE_WRITER_URL, DATABASE_READER_URL        — RDS PostgreSQL connection strings
 #   BETTER_AUTH_SECRET                              — auth signing secret (>=32 chars)
 #   FRONTEND_URL                                    — production frontend origin
 #                                                     (used as CORS_ORIGIN and,
@@ -18,7 +20,6 @@ name: Deploy to AWS
 #   AWS_CLOUDFRONT_DISTRIBUTION_ID                  — (optional) cache invalidation
 #
 # NOT required (removed):
-#   DATABASE_URL              — DB URLs are hardcoded in template.yaml
 #   AWS_LAMBDA_ROLE_ARN       — SAM auto-creates the execution role
 #   AWS_S3_BUCKET_LAMBDA_CODE — `sam deploy --resolve-s3` auto-provisions the code bucket
 # -----------------------------------------------------------------------------
@@ -46,7 +47,7 @@ jobs:
           node-version: 22.13.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.0.9
         with:
           version: 11.6.0
 
@@ -86,7 +87,7 @@ jobs:
           node-version: 22.13.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.0.9
         with:
           version: 11.6.0
 
@@ -97,39 +98,16 @@ jobs:
         run: pnpm build:api
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.2.1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup SAM CLI
-        uses: aws-actions/setup-sam@v2
+        uses: aws-actions/setup-sam@v3
         with:
           use-installer: true
-
-      # -------------------------------------------------------------------------
-      # Migrations.
-      # drizzle-kit reads DATABASE_WRITER_URL from the env
-      # (see packages/db/drizzle.config.ts). The canonical DB URL lives hardcoded
-      # in template.yaml; we extract it here so CI can run migrations without
-      # an extra Secret.
-      # -------------------------------------------------------------------------
-      - name: Extract DATABASE_WRITER_URL from template.yaml for migrations
-        run: |
-          set -euo pipefail
-          DB_URL=$(grep -E '^\s+DATABASE_WRITER_URL:' template.yaml \
-                   | head -1 \
-                   | sed -E 's/.*DATABASE_WRITER_URL:\s*"([^"]+)".*/\1/')
-          if [ -z "$DB_URL" ]; then
-            echo "::error::Failed to extract DATABASE_WRITER_URL from template.yaml"
-            exit 1
-          fi
-          echo "::add-mask::$DB_URL"
-          echo "DATABASE_WRITER_URL=$DB_URL" >> "$GITHUB_ENV"
-
-      - name: Run database migrations
-        run: pnpm db:migrate
 
       # -------------------------------------------------------------------------
       # First SAM deploy.
@@ -146,6 +124,11 @@ jobs:
             --region "${{ env.AWS_REGION }}" \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
+              VpcId="${{ secrets.VPC_ID }}" \
+              SubnetA="${{ secrets.SUBNET_A }}" \
+              SubnetB="${{ secrets.SUBNET_B }}" \
+              DatabaseWriterUrl="${{ secrets.DATABASE_WRITER_URL }}" \
+              DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
               BetterAuthUrl="${{ secrets.FRONTEND_URL }}" \
               CorsOrigin="${{ secrets.FRONTEND_URL }}"
@@ -182,6 +165,11 @@ jobs:
             --region "${{ env.AWS_REGION }}" \
             --capabilities CAPABILITY_IAM \
             --parameter-overrides \
+              VpcId="${{ secrets.VPC_ID }}" \
+              SubnetA="${{ secrets.SUBNET_A }}" \
+              SubnetB="${{ secrets.SUBNET_B }}" \
+              DatabaseWriterUrl="${{ secrets.DATABASE_WRITER_URL }}" \
+              DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
               BetterAuthUrl="${{ steps.get-url.outputs.lambda_url }}" \
               CorsOrigin="${{ secrets.FRONTEND_URL }}"
@@ -203,7 +191,7 @@ jobs:
           node-version: 22.13.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6.0.9
         with:
           version: 11.6.0
 
@@ -218,7 +206,7 @@ jobs:
         run: pnpm -F web build
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.2.1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

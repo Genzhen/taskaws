@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: TaskAWS Serverless API (Hono + tRPC + better-auth on Lambda Function URL)
+
+# =============================================================================
+# Global defaults applied to every Lambda function in this stack.
+# =============================================================================
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+
+# =============================================================================
+# Parameters passed via `sam deploy --parameter-overrides`.
+#
+# NOTE: Database connection strings are intentionally NOT parameters — they are
+# hardcoded in the Environment block below (per project convention). Only values
+# that are genuinely secret or dynamic (auth secret, runtime URLs) are params.
+# =============================================================================
+Parameters:
+  BetterAuthSecret:
+    Type: String
+    NoEcho: true
+    Description: Better-Auth secret (>= 32 chars, generated via `openssl rand -base64 32`)
+    MinLength: 32
+  BetterAuthUrl:
+    Type: String
+    Description: Base URL of the auth server (the Lambda Function URL — set after first deploy)
+    Default: ""
+  CorsOrigin:
+    Type: String
+    Description: Allowed frontend origin for CORS and better-auth trustedOrigins (e.g. https://app.example.com)
+    Default: ""
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+  TaskAwsApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: taskaws-api
+      Description: TaskAWS API (Hono + tRPC + better-auth)
+      Handler: lambda.handler
+      CodeUri: apps/server/dist/lambda.zip
+
+      # -----------------------------------------------------------------------
+      # Execution role.
+      # SAM auto-creates a role and attaches the listed managed policies.
+      # No need to manually specify or maintain an IAM Role ARN.
+      #   - AWSLambdaBasicExecutionRole    → CloudWatch Logs write
+      #   - AWSLambdaVPCAccessExecutionRole → ENI management for VPC access
+      #                                       (RDS / ElastiCache / etc.)
+      # -----------------------------------------------------------------------
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSLambdaVPCAccessExecutionRole
+
+      # -----------------------------------------------------------------------
+      # Environment variables.
+      #   - DB URLs: hardcoded below — NOT sourced from GitHub Secrets.
+      #              ⚠️  REPLACE the placeholders with your real connection strings
+      #              before first deploy. Reader/writer split is ready for a
+      #              read-replica setup; until then both can point at the same DB.
+      #   - Auth vars: via Parameters (injected from GitHub Secrets at deploy time).
+      # -----------------------------------------------------------------------
+      Environment:
+        Variables:
+          DATABASE_WRITER_URL: "postgresql://user:password@writer-host:5432/taskaws"
+          DATABASE_READER_URL: "postgresql://user:password@reader-host:5432/taskaws"
+          BETTER_AUTH_SECRET: !Ref BetterAuthSecret
+          BETTER_AUTH_URL: !Ref BetterAuthUrl
+          CORS_ORIGIN: !Ref CorsOrigin
+
+      # -----------------------------------------------------------------------
+      # Lambda Function URL — public, no Lambda-level auth (auth handled in-app
+      # via better-auth). CORS locked to the frontend origin.
+      # -----------------------------------------------------------------------
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+            - !Ref CorsOrigin
+          AllowHeaders:
+            - Content-Type
+            - Authorization
+            - Cookie
+          AllowMethods:
+            - GET
+            - POST
+            - OPTIONS
+          AllowCredentials: true
+
+# =============================================================================
+# Outputs — consumed by the GitHub Actions workflow (deploy-lambda job reads
+# LambdaFunctionUrl to wire VITE_SERVER_URL into the frontend build).
+# =============================================================================
+Outputs:
+  LambdaFunctionUrl:
+    Description: Lambda Function URL (public API endpoint)
+    Value: !GetAtt TaskAwsApiFunctionUrl.FunctionUrl
+    Export:
+      Name: TaskAwsApiUrl
+  FunctionName:
+    Description: Lambda function name
+    Value: !Ref TaskAwsApiFunction

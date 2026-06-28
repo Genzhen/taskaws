@@ -1,0 +1,225 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+jobs:
+  test:
+    name: Type Check & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check (all packages including web)
+        run: |
+          # Run check-types for packages with that script
+          pnpm check-types
+          # Run typecheck for apps/web (fail if errors)
+          cd apps/web && (pnpm typecheck || pnpm check-types || exit 1)
+
+      - name: Build
+        run: pnpm build
+
+      - name: Build Lambda bundle
+        run: pnpm build:api
+
+  deploy-lambda:
+    name: Deploy Lambda to AWS
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      lambda_url: ${{ steps.get-url.outputs.lambda_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Lambda bundle
+        run: pnpm build:api
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload Lambda code to S3 (must be before create/update)
+        run: |
+          aws s3 cp apps/server/dist/lambda.zip s3://${{ secrets.AWS_S3_BUCKET_LAMBDA_CODE }}/lambda.zip
+
+      - name: Check if Lambda exists
+        id: check-lambda
+        run: |
+          # Check existence without JSON output pollution
+          if aws lambda get-function --function-name taskaws-api >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Lambda function (first deploy)
+        if: steps.check-lambda.outputs.exists == 'false'
+        run: |
+          aws lambda create-function \
+            --function-name taskaws-api \
+            --runtime nodejs20.x \
+            --handler lambda.handler \
+            --code S3Bucket=${{ secrets.AWS_S3_BUCKET_LAMBDA_CODE }},S3Key=lambda.zip \
+            --role ${{ secrets.AWS_LAMBDA_ROLE_ARN }} \
+            --timeout 30 \
+            --memory-size 512 \
+            --environment Variables={DATABASE_URL=${{ secrets.DATABASE_URL }},BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }},BETTER_AUTH_URL=${{ secrets.FRONTEND_URL }},CORS_ORIGIN=${{ secrets.FRONTEND_URL }}}
+
+          # Wait for Lambda creation to complete (async operation)
+          aws lambda wait function-active-v2 --function-name taskaws-api
+
+      - name: Update Lambda function and environment (existing)
+        if: steps.check-lambda.outputs.exists == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Run database migrations BEFORE code update (backward-compatible)
+          pnpm db:migrate
+
+          aws lambda update-function-code \
+            --function-name taskaws-api \
+            --s3-bucket ${{ secrets.AWS_S3_BUCKET_LAMBDA_CODE }} \
+            --s3-key lambda.zip
+
+          # Wait for code update to complete before changing config
+          aws lambda wait function-updated --function-name taskaws-api
+
+          # Update environment variables (keep BETTER_AUTH_URL as Lambda URL)
+          aws lambda update-function-configuration \
+            --function-name taskaws-api \
+            --environment Variables={DATABASE_URL=${{ secrets.DATABASE_URL }},BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }},BETTER_AUTH_URL=${{ steps.get-url.outputs.lambda_url }},CORS_ORIGIN=${{ secrets.FRONTEND_URL }}}
+
+      - name: Create Function URL (if missing) + Grant invoke permission
+        if: steps.check-lambda.outputs.exists == 'false'
+        run: |
+          # Create Function URL with placeholder CORS (will update later)
+          aws lambda create-function-url-config \
+            --function-name taskaws-api \
+            --auth-type NONE \
+            --cors-config AllowOrigins='["*"]',AllowMethods='["GET","POST","OPTIONS"]',AllowHeaders='["Content-Type","Authorization","Cookie"]',AllowCredentials=false || true
+
+          # Grant public invoke permission (required for Function URL to work)
+          aws lambda add-permission \
+            --function-name taskaws-api \
+            --statement-id FunctionURLAllowPublicAccess \
+            --action lambda:InvokeFunctionUrl \
+            --principal '*' \
+            --function-url-auth-type NONE
+
+      - name: Get Lambda Function URL
+        id: get-url
+        run: |
+          LAMBDA_URL=$(aws lambda get-function-url-config --function-name taskaws-api --query FunctionUrl --output text | sed 's|/$||')
+          echo "Lambda URL: $LAMBDA_URL"
+          echo "lambda_url=$LAMBDA_URL" >> $GITHUB_OUTPUT
+
+      - name: Update Lambda environment with actual URLs (first deploy)
+        if: steps.check-lambda.outputs.exists == 'false'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Run database migrations BEFORE updating Lambda (backward-compatible strategy)
+          pnpm db:migrate
+
+          # Update BETTER_AUTH_URL with actual Lambda URL, CORS_ORIGIN with FRONTEND_URL
+          aws lambda update-function-configuration \
+            --function-name taskaws-api \
+            --environment Variables={DATABASE_URL=${{ secrets.DATABASE_URL }},BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }},BETTER_AUTH_URL=${{ steps.get-url.outputs.lambda_url }},CORS_ORIGIN=${{ secrets.FRONTEND_URL }}}
+
+          # Update Function URL CORS to match FRONTEND_URL with AllowCredentials=true
+          aws lambda update-function-url-config \
+            --function-name taskaws-api \
+            --cors-config AllowOrigins='["${{ secrets.FRONTEND_URL }}"]',AllowMethods='["GET","POST","OPTIONS"]',AllowHeaders='["Content-Type","Authorization","Cookie"]',AllowCredentials=true || true
+
+  deploy-frontend:
+    name: Deploy Frontend to S3
+    needs: deploy-lambda
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Set Lambda URL env
+        run: |
+          echo "VITE_SERVER_URL=${{ needs.deploy-lambda.outputs.lambda_url }}" >> apps/web/.env
+
+      - name: Build frontend
+        run: pnpm -F web build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3 with SPA fallback
+        run: |
+          # Upload React Router SPA build to S3
+          aws s3 sync apps/web/build/client s3://${{ secrets.AWS_S3_BUCKET }} --delete
+
+          # Upload index.html as fallback for SPA deep links (all routes → index.html)
+          aws s3 cp apps/web/build/client/index.html s3://${{ secrets.AWS_S3_BUCKET }}/index.html
+
+      - name: Configure S3 for SPA routing (CloudFront or direct)
+        run: |
+          # S3 website configuration for SPA fallback (all routes → index.html)
+          aws s3api put-bucket-website \
+            --bucket ${{ secrets.AWS_S3_BUCKET }} \
+            --website-configuration '{"IndexDocument":{"Suffix":"index.html"},"ErrorDocument":{"Key":"index.html"}}'
+
+      - name: Invalidate CloudFront cache
+        if: ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"

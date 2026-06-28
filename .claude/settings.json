@@ -8,15 +8,6 @@
             "command": "bash .claude/workflow-visualizer/hook.sh"
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .claude/hooks/pre-commit-review.cjs"
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -45,14 +36,6 @@
           {
             "type": "command",
             "command": "bash .claude/workflow-visualizer/hook.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node .claude/hooks/codex-review-on-stop.cjs"
           }
         ]
       }

@@ -119,7 +119,6 @@ Resources:
           AllowMethods:
             - GET
             - POST
-            - OPTIONS
           AllowCredentials: true
 
 # =============================================================================

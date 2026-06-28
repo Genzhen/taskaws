@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { githubReader, githubWriter } from "@taskaws/db";
-import { protectedProcedure, router } from "../index";
+import { publicProcedure, router } from "../index";
+
+const DEMO_USER_ID = "taskaws-public-demo-user";
 
 export const githubRouter = router({
   /** 同步 GitHub 资料（Writer 终节点） */
-  sync: protectedProcedure
+  sync: publicProcedure
     .input(z.object({ pat: z.string().min(1) }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input }) => {
       // Create AbortController with 10s timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10_000);
@@ -41,8 +43,10 @@ export const githubRouter = router({
           public_repos: number;
         };
 
+        await githubWriter.ensureDemoUser(DEMO_USER_ID);
+
         const profile = await githubWriter.upsertByUserId({
-          userId: ctx.session.user.id,
+          userId: DEMO_USER_ID,
           githubId: ghUser.id,
           username: ghUser.login,
           avatarUrl: ghUser.avatar_url,
@@ -65,13 +69,13 @@ export const githubRouter = router({
     }),
 
   /** 读取已同步 profile（Reader 终节点） */
-  getProfile: protectedProcedure.query(async ({ ctx }) => {
-    const profile = await githubReader.getByUserId(ctx.session.user.id);
+  getProfile: publicProcedure.query(async () => {
+    const profile = await githubReader.getByUserId(DEMO_USER_ID);
     return { profile };
   }),
 
   /** 删除已同步 profile（Writer 终节点） */
-  deleteProfile: protectedProcedure.mutation(async ({ ctx }) => {
-    return githubWriter.deleteByUserId(ctx.session.user.id);
+  deleteProfile: publicProcedure.mutation(async () => {
+    return githubWriter.deleteByUserId(DEMO_USER_ID);
   }),
 });

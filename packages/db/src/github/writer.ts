@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { db } from "../index";
-import { githubProfiles } from "../schema";
+import { githubProfiles, user } from "../schema";
 
 export type UpsertGithubProfileInput = {
   userId: string;
@@ -14,6 +14,21 @@ export type UpsertGithubProfileInput = {
 };
 
 export const githubWriter = {
+  /** Ensure the public demo flow has a user row for github_profiles.user_id FK. */
+  ensureDemoUser: async (userId: string) => {
+    await db
+      .insert(user)
+      .values({
+        id: userId,
+        name: "TaskAWS Demo",
+        email: "demo@taskaws.local",
+        emailVerified: true,
+      })
+      .onConflictDoNothing({
+        target: user.id,
+      });
+  },
+
   /** upsert：按 userId 插入或更新；事务 + unique violation 处理防止并发 race */
   upsertByUserId: async (input: UpsertGithubProfileInput) => {
     const now = new Date();

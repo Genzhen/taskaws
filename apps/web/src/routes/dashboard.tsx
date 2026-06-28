@@ -1,31 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
-
-import { authClient } from "@/lib/auth-client";
-import { trpc } from "@/utils/trpc";
+import { BottomNav } from "@/components/github-sync/bottom-nav";
+import { GitHubSync } from "@/components/github-sync";
+import { TopBar } from "@/components/github-sync/top-bar";
 
 export default function Dashboard() {
-  const { data: session, isPending } = authClient.useSession();
-  const navigate = useNavigate();
-
-  const privateData = useQuery(trpc.privateData.queryOptions());
-
-  useEffect(() => {
-    if (!session && !isPending) {
-      navigate("/login");
-    }
-  }, [session, isPending, navigate]);
-
-  if (isPending) {
-    return <div>Loading...</div>;
-  }
-
   return (
-    <div>
-      <h1>Dashboard</h1>
-      <p>Welcome {session?.user.name}</p>
-      <p>API: {privateData.data?.message}</p>
+    <div className="flex min-h-full flex-col bg-[#0d1117]">
+      <TopBar />
+      <div className="flex-grow">
+        <GitHubSync />
+      </div>
+      <BottomNav />
     </div>
   );
 }

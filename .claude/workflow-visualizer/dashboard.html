@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GZ · WORKFLOW CTRL</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#01010b;
+  --b0:rgba(0,210,255,.1);
+  --txt:rgba(145,188,228,.85);
+  --hi:#e0f2ff;
+  --mu:rgba(58,90,152,.75);
+  --cy:#00e8ff;--gn:#00ff9a;--pu:#b070ff;--pk:#ff45b0;--am:#ffb020;--rd:#ff304a;
+  --cy2:rgba(0,232,255,.1);--pu2:rgba(176,112,255,.12);--gn2:rgba(0,255,154,.08);
+}
+html,body{height:100%;overflow:hidden;background:var(--bg)}
+body{
+  display:grid;
+  grid-template-rows:46px 1fr;
+  grid-template-columns:162px 1fr 255px;
+  font-family:'SF Mono','Cascadia Code','Fira Code',monospace;
+  font-size:12px;color:var(--txt);position:relative;
+}
+
+/* ══════ BG ══════ */
+#bgCanvas{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.45}
+.aurora{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 60% 45% at 10% 20%,rgba(0,50,170,.3) 0%,transparent 65%),
+    radial-gradient(ellipse 50% 38% at 90% 80%,rgba(85,0,185,.22) 0%,transparent 58%),
+    radial-gradient(ellipse 42% 60% at 48% 50%,rgba(0,90,160,.12) 0%,transparent 65%);
+  animation:aur 20s ease-in-out infinite alternate}
+@keyframes aur{0%{filter:hue-rotate(0deg)}55%{filter:hue-rotate(24deg) brightness(1.1)}100%{filter:hue-rotate(-14deg) brightness(.93)}}
+.grid-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(0,210,255,.022) 1px,transparent 1px),linear-gradient(90deg,rgba(0,210,255,.022) 1px,transparent 1px);
+  background-size:44px 44px}
+.scanlines{position:fixed;inset:0;z-index:999;pointer-events:none;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.016) 3px,rgba(0,0,0,.016) 4px)}
+
+/* ══════ HEADER ══════ */
+header{grid-column:1/-1;z-index:20;position:relative;
+  background:rgba(1,2,14,.97);backdrop-filter:blur(30px);
+  border-bottom:1px solid var(--b0);
+  display:flex;align-items:center;gap:10px;padding:0 14px;overflow:hidden}
+header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--cy) 22%,var(--pu) 62%,transparent);
+  animation:hscan 5.5s linear infinite}
+@keyframes hscan{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.logo{font-size:12px;font-weight:900;color:var(--hi);letter-spacing:.12em;flex-shrink:0;display:flex;align-items:center;gap:6px}
+.logo em{color:var(--cy);font-style:normal}
+.live-dot{width:7px;height:7px;border-radius:50%;background:rgba(50,70,110,.6);flex-shrink:0;transition:.4s}
+.live-dot.on{background:var(--gn);box-shadow:0 0 6px var(--gn),0 0 18px rgba(0,255,154,.45);animation:ldot 1.4s ease-in-out infinite}
+@keyframes ldot{0%,100%{transform:scale(1)}50%{transform:scale(1.8);opacity:.45}}
+.badge{padding:2px 7px;border-radius:3px;font-size:8.5px;font-weight:700;letter-spacing:.05em;display:none}
+.badge.on{display:block}
+.cmd-badge{border:1px solid rgba(176,112,255,.4);color:var(--pu);background:rgba(176,112,255,.08)}
+.qa-badge{border:1px solid rgba(0,255,154,.35);color:var(--gn);background:rgba(0,255,154,.07)}
+.sep{width:1px;height:20px;background:var(--b0)}
+.hstats{margin-left:auto;display:flex;gap:16px}
+.hst{display:flex;flex-direction:column;align-items:flex-end}
+.hst .v{font-size:14px;font-weight:900;color:var(--hi);line-height:1;transition:color .2s,transform .2s}
+.hst .v.flash{animation:numfl .3s ease}
+@keyframes numfl{0%{color:var(--cy);transform:scale(1.25)}100%{color:var(--hi);transform:scale(1)}}
+.hst .l{font-size:7px;color:var(--mu);letter-spacing:.1em;margin-top:1px;text-transform:uppercase}
+
+/* ══════ PANELS ══════ */
+.lp,.rp{z-index:5;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.lp{border-right:1px solid var(--b0)}
+.rp{border-left:1px solid var(--b0)}
+.slabel{font-size:6.5px;font-weight:800;letter-spacing:.2em;color:var(--mu);text-transform:uppercase;
+  margin-bottom:5px;display:flex;align-items:center;gap:5px;line-height:1}
+.slabel::after{content:'';flex:1;height:1px;background:var(--b0)}
+
+/* ══════ AGENT PODS ══════ */
+.ag-wrap{flex-shrink:0;padding:8px 9px}
+.ag-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.ag-pod{border:1px solid rgba(0,210,255,.07);border-radius:7px;padding:6px 8px;
+  background:rgba(2,4,20,.88);transition:all .35s;position:relative;overflow:hidden;cursor:default}
+.ag-pod::before{content:'';position:absolute;inset:0;opacity:0;border-radius:6px;
+  background:radial-gradient(ellipse at 50% 0%,color-mix(in srgb,var(--ac,var(--cy)) 20%,transparent),transparent 68%);transition:.3s}
+.ag-pod.on{border-color:color-mix(in srgb,var(--ac,var(--cy)) 48%,transparent)}
+.ag-pod.on::before{opacity:1}
+.ag-pod::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;
+  background:var(--ac,var(--cy));transform:scaleX(0);transform-origin:left;opacity:.7}
+.ag-pod.on::after{animation:podbar 2.2s ease-in-out infinite}
+@keyframes podbar{0%,4%{transform:scaleX(0);transform-origin:left}46%{transform:scaleX(1);transform-origin:left}50%,54%{transform:scaleX(1);transform-origin:right}96%,100%{transform:scaleX(0);transform-origin:right}}
+.ag-head{display:flex;align-items:center;gap:4px;margin-bottom:1px}
+.ag-ico{font-size:12px}
+.ag-name{font-size:8.5px;font-weight:700;color:var(--mu);transition:color .3s;flex:1}
+.ag-pod.on .ag-name{color:var(--ac,var(--cy))}
+.ag-pulse{width:4px;height:4px;border-radius:50%;background:var(--mu);flex-shrink:0;transition:.3s}
+.ag-pod.on .ag-pulse{background:var(--ac,var(--cy));box-shadow:0 0 5px var(--ac,var(--cy));animation:apulse 1.1s ease-in-out infinite}
+@keyframes apulse{0%,100%{transform:scale(1)}50%{transform:scale(2.4);opacity:.3}}
+.ag-task{font-size:7px;color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;height:10px}
+.ag-cnt{font-size:6.5px;color:var(--mu);margin-top:1px;opacity:.6}
+
+/* ══════ CURRENT TOOL ══════ */
+.ct-wrap{flex-shrink:0;padding:3px 9px}
+.ct-box{display:flex;align-items:center;gap:7px;padding:7px 9px;
+  background:rgba(2,3,16,.88);border:1px solid var(--b0);border-radius:7px;min-height:44px;transition:all .25s}
+.ct-box.run{border-color:rgba(0,232,255,.38);background:rgba(0,20,48,.52);
+  box-shadow:0 0 22px rgba(0,232,255,.06),inset 0 0 22px rgba(0,232,255,.025)}
+.ct-ico{font-size:15px;flex-shrink:0;width:20px;text-align:center}
+.ct-body{flex:1;overflow:hidden}
+.ct-name{font-size:10.5px;font-weight:700;color:var(--mu);display:flex;align-items:center;gap:5px;transition:color .2s}
+.ct-box.run .ct-name{color:var(--cy)}
+.ct-run{font-size:6.5px;padding:1px 4px;border-radius:2px;background:rgba(0,232,255,.14);color:var(--cy);font-weight:800;animation:blink .85s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.ct-pre{font-size:8px;color:var(--mu);margin-top:1.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ct-sub{font-size:7.5px;color:var(--pu);margin-top:1px}
+.ct-ts{font-size:7.5px;color:var(--mu);flex-shrink:0}
+
+/* ══════ LOG ══════ */
+.log-panel{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.log-inner{flex-shrink:0;padding:4px 9px 2px}
+.log-scroll{flex:1;overflow-y:auto;padding:1px 3px 6px}
+.log-scroll::-webkit-scrollbar{width:2px}
+.log-scroll::-webkit-scrollbar-thumb{background:var(--b0);border-radius:2px}
+.lr{display:grid;grid-template-columns:38px 13px 64px 1fr 28px;align-items:center;gap:3px;padding:2px 5px;border-radius:3px;transition:background .1s}
+.lr:hover{background:rgba(0,232,255,.03)}
+.lr.sub{opacity:.4}
+.l-ts{color:var(--mu);font-size:7px}
+.l-ico{font-size:9px;text-align:center}
+.l-tool{font-size:7px;font-weight:700;white-space:nowrap}
+.l-pre{color:rgba(80,125,185,.48);font-size:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.l-dur{color:var(--mu);font-size:7px;text-align:right}
+.empty-log{text-align:center;padding:18px 0;color:var(--mu)}
+.empty-log .ei{font-size:16px;margin-bottom:4px;opacity:.32}
+.empty-log .et{font-size:8px;line-height:2;opacity:.52}
+
+/* ══════════════ CENTER PANEL ══════════════ */
+.cp{z-index:5;position:relative;overflow:hidden;display:flex;flex-direction:column}
+
+/* ── HUD BANNER ── */
+.hud{flex-shrink:0;margin:7px 11px 3px;padding:0 14px;height:64px;
+  background:rgba(0,3,18,.92);
+  border:1px solid rgba(0,200,255,.13);border-radius:10px;
+  display:flex;align-items:center;gap:12px;
+  position:relative;overflow:hidden}
+.hud::before{content:'';position:absolute;inset:0;border-radius:9px;
+  background:linear-gradient(135deg,rgba(0,80,200,.055) 0%,transparent 55%);pointer-events:none}
+.hud::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--cy) 28%,var(--pu) 68%,transparent);
+  animation:hscan 4.5s linear infinite}
+.hud-live{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
+.hud-dot{width:9px;height:9px;border-radius:50%;background:rgba(45,65,105,.6);transition:.4s}
+.hud-dot.on{background:var(--gn);box-shadow:0 0 7px var(--gn),0 0 20px rgba(0,255,154,.55);animation:ldot 1.3s ease-in-out infinite}
+.hud-live-txt{font-size:6px;font-weight:800;color:rgba(45,65,105,.7);letter-spacing:.14em;text-transform:uppercase;transition:.4s}
+.hud-live.on .hud-live-txt{color:var(--gn)}
+.hud-sep{width:1px;height:38px;background:rgba(0,200,255,.1);flex-shrink:0}
+.hud-cycle{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+.hud-cycle-lbl{font-size:5.5px;letter-spacing:.22em;color:rgba(62,100,175,.5);text-transform:uppercase}
+.hud-cycle-num{font-size:30px;font-weight:900;color:var(--cy);line-height:1;letter-spacing:-.02em;min-width:34px;text-align:center;
+  text-shadow:0 0 20px rgba(0,232,255,.6)}
+.hud-arr{font-size:14px;color:rgba(0,200,255,.28);flex-shrink:0}
+.hud-node-wrap{display:flex;flex-direction:column;flex-shrink:0;min-width:58px}
+.hud-node-lbl{font-size:5.5px;letter-spacing:.22em;color:rgba(62,100,175,.5);text-transform:uppercase}
+.hud-node-val{font-size:24px;font-weight:900;line-height:1;letter-spacing:.02em;transition:color .3s;
+  text-shadow:0 0 18px currentColor}
+/* glitch on node name */
+.hud-node-val.glitch{animation:glitch .12s steps(2) 3}
+@keyframes glitch{
+  0%{clip-path:polygon(0 0,100% 0,100% 35%,0 35%);transform:translateX(-2px)}
+  50%{clip-path:polygon(0 40%,100% 40%,100% 70%,0 70%);transform:translateX(2px)}
+  100%{clip-path:none;transform:none}
+}
+.hud-task-wrap{flex:1;overflow:hidden;border-left:1px solid rgba(0,200,255,.07);padding-left:12px}
+.hud-task-lbl{font-size:5.5px;letter-spacing:.22em;color:rgba(62,100,175,.5);text-transform:uppercase;margin-bottom:2px}
+.hud-task-val{font-size:10.5px;font-weight:600;color:rgba(175,215,245,.72);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.35}
+
+/* ══════ 3D WORKFLOW REGION ══════ */
+.wf-region{flex-shrink:0;padding:3px 11px 0;position:relative}
+.wf-3d{
+  perspective:1100px;
+  perspective-origin:50% -10%;
+}
+.wf-tilt{
+  transform:rotateX(9deg) scale(1.01);
+  transform-style:preserve-3d;
+  transform-origin:50% 50%;
+  transition:transform .6s ease;
+}
+.wf-svg{width:100%;display:block;overflow:visible}
+
+/* ══════ NODE STYLES ══════ */
+/* flat-top hex R=26: points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5" */
+.hnode{transform-box:fill-box;transform-origin:center;transition:transform .45s cubic-bezier(.34,1.56,.64,1),filter .4s,opacity .4s}
+.hnode .hbg{fill:rgba(2,4,22,.97);transition:fill .4s}
+.hnode .hring{fill:none;stroke:rgba(0,200,255,.13);stroke-width:1.2;transition:stroke .4s,stroke-width .4s}
+.hnode .hglow{fill:none;stroke:transparent;stroke-width:5;opacity:0;transition:all .4s}
+.hnode .hlbl{fill:rgba(72,108,172,.78);font-size:10.5px;font-weight:900;font-family:'SF Mono',monospace;transition:fill .3s;letter-spacing:.01em}
+.hnode .hname{fill:rgba(55,85,148,.55);font-size:6.5px;font-family:'SF Mono',monospace;transition:fill .3s;letter-spacing:.05em;text-transform:uppercase}
+.hnode .hpulse,.hnode .hpulse2{fill:none;stroke:var(--cy);stroke-width:.6;opacity:0}
+
+/* done */
+.hnode.done .hring{stroke:rgba(0,255,154,.38);stroke-width:1.4}
+.hnode.done .hbg{fill:rgba(0,14,7,.96)}
+.hnode.done .hlbl{fill:#35d466}
+.hnode.done .hname{fill:rgba(53,212,102,.4)}
+
+/* ACTIVE — no scale, stays in place, glow communicates activation */
+.hnode.active{filter:drop-shadow(0 0 14px rgba(0,232,255,.92)) drop-shadow(0 0 36px rgba(0,232,255,.52)) drop-shadow(0 0 64px rgba(0,232,255,.2))}
+.hnode.active .hbg{fill:rgba(0,26,62,.98)}
+.hnode.active .hring{stroke:var(--cy);stroke-width:2.5}
+.hnode.active .hlbl{fill:var(--hi);font-size:11.5px}
+.hnode.active .hname{fill:rgba(0,232,255,.72)}
+.hnode.active .hglow{stroke:var(--cy);opacity:.45;animation:hglw 1.9s ease-in-out infinite}
+.hnode.active .hpulse{stroke:var(--cy);animation:hpls 2.5s ease-out infinite}
+.hnode.active .hpulse2{stroke:var(--cy);animation:hpls 2.5s ease-out infinite .85s}
+@keyframes hglw{0%,100%{stroke-width:5;opacity:.32}50%{stroke-width:14;opacity:.62}}
+@keyframes hpls{0%{r:18;opacity:.5}100%{r:42;opacity:0}}
+
+/* N3 purple */
+.hnode.n3.active{filter:drop-shadow(0 0 14px rgba(176,112,255,.92)) drop-shadow(0 0 36px rgba(176,112,255,.56)) drop-shadow(0 0 64px rgba(176,112,255,.22))}
+.hnode.n3.active .hbg{fill:rgba(26,0,60,.98)}
+.hnode.n3.active .hring{stroke:var(--pu);stroke-width:2.5}
+.hnode.n3.active .hlbl{fill:#e0c5ff}
+.hnode.n3.active .hname{fill:rgba(176,112,255,.72)}
+.hnode.n3.active .hglow{stroke:var(--pu)}
+.hnode.n3.active .hpulse,.hnode.n3.active .hpulse2{stroke:var(--pu)}
+
+/* N4 amber */
+.hnode.n4.active{filter:drop-shadow(0 0 14px rgba(255,176,32,.88)) drop-shadow(0 0 36px rgba(255,176,32,.52)) drop-shadow(0 0 64px rgba(255,176,32,.2))}
+.hnode.n4.active .hbg{fill:rgba(40,20,0,.98)}
+.hnode.n4.active .hring{stroke:var(--am);stroke-width:2.5}
+.hnode.n4.active .hlbl{fill:#ffe08a}
+.hnode.n4.active .hname{fill:rgba(255,176,32,.68)}
+.hnode.n4.active .hglow{stroke:var(--am)}
+.hnode.n4.active .hpulse,.hnode.n4.active .hpulse2{stroke:var(--am)}
+
+/* N6 pink */
+.hnode.n6.active{filter:drop-shadow(0 0 14px rgba(255,69,176,.88)) drop-shadow(0 0 36px rgba(255,69,176,.52)) drop-shadow(0 0 64px rgba(255,69,176,.22))}
+.hnode.n6.active .hbg{fill:rgba(40,0,24,.98)}
+.hnode.n6.active .hring{stroke:var(--pk);stroke-width:2.5}
+.hnode.n6.active .hlbl{fill:#ffb0dc}
+.hnode.n6.active .hname{fill:rgba(255,69,176,.68)}
+.hnode.n6.active .hglow{stroke:var(--pk)}
+.hnode.n6.active .hpulse,.hnode.n6.active .hpulse2{stroke:var(--pk)}
+
+/* ══════ FLOW SEGMENTS ══════ */
+/* default: always visible dim line — shows the full route even when idle */
+.flow-seg .seg-line{fill:none;stroke:rgba(0,165,230,.26);stroke-width:1.1;transition:stroke .5s,stroke-width .5s,filter .5s,opacity .5s}
+.flow-seg .seg-particle{opacity:0;transition:opacity .4s}
+/* done: green energised trace */
+.flow-seg.seg-done .seg-line{stroke:rgba(0,255,154,.42);stroke-width:1.6}
+.flow-seg.seg-done .seg-particle{opacity:.28}
+/* active: bright animated dash */
+.flow-seg.seg-active .seg-line{stroke:rgba(0,232,255,.95);stroke-width:3;stroke-dasharray:8 5;animation:fdash .78s linear infinite;filter:drop-shadow(0 0 5px rgba(0,232,255,.75))}
+.flow-seg.seg-active .seg-particle{opacity:1}
+/* dim (future segments): slightly less bright but still clearly visible */
+.flow-seg.seg-dim .seg-line{stroke:rgba(0,140,210,.2);stroke-width:.9;opacity:1}
+.flow-seg.seg-dim .seg-particle{opacity:0}
+@keyframes fdash{to{stroke-dashoffset:-26}}
+
+/* loops */
+.loop-task{fill:none;stroke:rgba(176,112,255,.42);stroke-width:1.4;stroke-dasharray:5 4;animation:fdash 1.5s linear infinite}
+.loop-feat{fill:none;stroke:rgba(0,255,154,.35);stroke-width:1.4;stroke-dasharray:5 4;animation:fdash 2.8s linear infinite}
+.loop-retry{fill:none;stroke:rgba(255,176,32,.52);stroke-width:1.4;stroke-dasharray:4 4;animation:fdash 1.1s linear infinite;opacity:0;transition:opacity .5s}
+.loop-retry.on{opacity:1}
+.lbg{rx:3;ry:3}
+.ltxt{font-size:7px;font-weight:700;font-family:'SF Mono',monospace;letter-spacing:.04em}
+
+/* ══════ LOOP CHIPS ══════ */
+.chips-row{display:flex;align-items:center;gap:5px;padding:3px 11px 2px;flex-shrink:0}
+.lchip{font-size:7.5px;padding:2px 8px;border-radius:999px;font-weight:700;display:inline-flex;align-items:center;gap:3px}
+.lchip.n{border:1px solid rgba(0,232,255,.25);color:var(--cy);background:var(--cy2)}
+.lchip.t{border:1px solid rgba(176,112,255,.26);color:var(--pu);background:var(--pu2)}
+.lchip.f{border:1px solid rgba(0,255,154,.22);color:#38d46a;background:var(--gn2)}
+.lchip.r{border:1px solid rgba(255,176,32,.3);color:var(--am);background:rgba(255,176,32,.07);display:none}
+.lchip.r.on{display:inline-flex}
+
+/* ══════ AI ROBOT CHARACTER ══════ */
+.bot-wrap{margin-left:auto;flex-shrink:0;width:54px;display:flex;flex-direction:column;align-items:center;position:relative}
+.bot-svg{width:52px;height:72px;overflow:visible}
+/* bot parts */
+.bot-head-hex{fill:rgba(3,5,24,.95);stroke-width:1.5;transition:stroke .4s,filter .4s}
+.bot-head-hex.idle{stroke:rgba(0,200,255,.3)}
+.bot-head-hex.working{stroke:var(--pu);filter:drop-shadow(0 0 5px rgba(176,112,255,.6))}
+.bot-head-hex.reviewing{stroke:var(--am);filter:drop-shadow(0 0 5px rgba(255,176,32,.6))}
+.bot-head-hex.qa{stroke:var(--pk);filter:drop-shadow(0 0 5px rgba(255,69,176,.6))}
+.bot-head-hex.done{stroke:var(--gn);filter:drop-shadow(0 0 5px rgba(0,255,154,.6))}
+.bot-eye{transition:fill .4s,filter .4s}
+.bot-eye.idle{fill:rgba(0,200,255,.4)}
+.bot-eye.working{fill:var(--pu);filter:drop-shadow(0 0 3px var(--pu));animation:eyeflash .6s ease-in-out infinite alternate}
+.bot-eye.reviewing{fill:var(--am);filter:drop-shadow(0 0 3px var(--am))}
+.bot-eye.qa{fill:var(--pk);filter:drop-shadow(0 0 3px var(--pk))}
+.bot-eye.done{fill:var(--gn);filter:drop-shadow(0 0 3px var(--gn))}
+@keyframes eyeflash{0%{opacity:.7;r:3.5}100%{opacity:1;r:5}}
+.bot-body-rect{fill:rgba(3,5,24,.95);stroke-width:1.2;transition:stroke .4s}
+.bot-body-rect.idle{stroke:rgba(0,200,255,.22)}
+.bot-body-rect.working{stroke:rgba(176,112,255,.5)}
+.bot-body-rect.reviewing{stroke:rgba(255,176,32,.5)}
+.bot-body-rect.qa{stroke:rgba(255,69,176,.5)}
+.bot-body-rect.done{stroke:rgba(0,255,154,.5)}
+.bot-core{transition:fill .4s,filter .4s}
+.bot-core.idle{fill:rgba(0,200,255,.35)}
+.bot-core.working{fill:var(--pu);filter:drop-shadow(0 0 5px var(--pu));animation:corepulse .7s ease-in-out infinite alternate}
+.bot-core.reviewing{fill:var(--am);animation:corepulse 1.2s ease-in-out infinite alternate}
+.bot-core.qa{fill:var(--pk);animation:corepulse .8s ease-in-out infinite alternate}
+.bot-core.done{fill:var(--gn);filter:drop-shadow(0 0 8px var(--gn))}
+@keyframes corepulse{0%{opacity:.7;r:4}100%{opacity:1;r:6.5}}
+.bot-arm-l{transform-origin:70px 58px;transition:stroke .4s}
+.bot-arm-r{transform-origin:30px 58px;transition:stroke .4s}
+.bot-arm.idle{stroke:rgba(0,200,255,.3);stroke-width:4;stroke-linecap:round}
+.bot-arm.working{stroke:rgba(176,112,255,.7);stroke-width:4;stroke-linecap:round}
+.bot-arm.reviewing{stroke:rgba(255,176,32,.7);stroke-width:4;stroke-linecap:round}
+.bot-arm.qa{stroke:rgba(255,69,176,.7);stroke-width:4;stroke-linecap:round}
+.bot-arm.done{stroke:rgba(0,255,154,.7);stroke-width:4;stroke-linecap:round}
+
+/* bot bob animation */
+.bot-svg.idle-anim{animation:botbob 3s ease-in-out infinite}
+.bot-svg.work-anim{animation:botwiggle 0.35s ease-in-out infinite alternate}
+.bot-svg.done-anim{animation:botdance 0.5s ease-in-out 6}
+@keyframes botbob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+@keyframes botwiggle{0%{transform:rotate(-3deg) translateY(-1px)}100%{transform:rotate(3deg) translateY(1px)}}
+@keyframes botdance{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-5px) rotate(-5deg)}75%{transform:translateY(-3px) rotate(5deg)}}
+
+/* arm working animation */
+.arm-l-work{animation:armlw .4s ease-in-out infinite alternate;transform-origin:0px 0px}
+.arm-r-work{animation:armrw .4s ease-in-out infinite alternate;transform-origin:0px 0px}
+@keyframes armlw{0%{transform:rotate(0deg)}100%{transform:rotate(-20deg)}}
+@keyframes armrw{0%{transform:rotate(0deg)}100%{transform:rotate(20deg)}}
+
+/* antenna pulse */
+.bot-antenna{animation:antpulse 2s ease-in-out infinite}
+@keyframes antpulse{0%,100%{opacity:.5;r:3}50%{opacity:1;r:4.5}}
+
+.bot-state-txt{font-size:6.5px;font-weight:800;letter-spacing:.1em;text-align:center;margin-top:2px;text-transform:uppercase;transition:color .4s;color:var(--mu)}
+.bot-state-txt.working{color:var(--pu)}
+.bot-state-txt.reviewing{color:var(--am)}
+.bot-state-txt.qa{color:var(--pk)}
+.bot-state-txt.done{color:var(--gn)}
+
+/* ══════ CENTER BOTTOM ══════ */
+.center-bottom{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.cb-hdr{flex-shrink:0;padding:3px 11px 1px}
+
+/* ══════ RIGHT PANEL ══════ */
+.prg-wrap{flex-shrink:0;padding:8px 9px}
+.prg-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+.prg-pct{font-size:22px;font-weight:900;color:var(--hi);line-height:1;text-shadow:0 0 15px rgba(0,232,255,.4)}
+.prg-label{font-size:7.5px;color:var(--mu)}
+.prg-track{height:3.5px;background:rgba(0,232,255,.06);border-radius:3px;overflow:hidden;margin:2px 0 3px}
+.prg-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--cy),var(--pu));transition:width 1.5s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden}
+.prg-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.26),transparent);animation:shim 2s linear infinite}
+@keyframes shim{from{transform:translateX(-100%)}to{transform:translateX(300%)}}
+.prg-meta{display:flex;gap:4px;font-size:7px;color:var(--mu)}
+.task-wrap{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.task-inner{flex-shrink:0;padding:2px 9px 1px}
+.task-scroll{flex:1;overflow-y:auto;padding:0 9px 6px}
+.task-scroll::-webkit-scrollbar{width:2px}
+.task-scroll::-webkit-scrollbar-thumb{background:var(--b0);border-radius:2px}
+.ph-row{display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;cursor:pointer;user-select:none;transition:background .12s;margin-bottom:1.5px}
+.ph-row:hover{background:rgba(0,232,255,.04)}
+.ph-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.ph-nm{font-size:8px;color:rgba(88,128,185,.62);flex:1}
+.ph-ct{font-size:6.5px;color:var(--mu)}
+.cy-card{margin:2px 0 4px;padding:5px 7px;border-radius:5px;border:1px solid rgba(0,232,255,.07);background:rgba(1,2,14,.78);border-left:2px solid rgba(0,232,255,.18);transition:all .3s}
+.cy-card.cur{border-left-color:var(--gn);box-shadow:inset 0 0 14px rgba(0,255,154,.018)}
+.cy-hd{display:flex;align-items:center;gap:4px;margin-bottom:2px;font-size:7px;font-weight:700}
+.cy-cur{font-size:5.5px;padding:1px 4px;border-radius:2px;background:rgba(0,255,154,.1);color:var(--gn);border:1px solid rgba(0,255,154,.2);font-weight:800}
+.ti-nm{display:flex;align-items:center;gap:3px;font-size:6.5px;font-weight:700;color:rgba(82,122,180,.58);margin-bottom:1px}
+.ti-badge{font-size:6px;background:rgba(0,232,255,.07);color:rgba(0,232,255,.5);padding:0 2px;border-radius:2px}
+.chk{display:flex;align-items:flex-start;gap:4px;padding:1px 0;font-size:6.5px;color:rgba(82,135,190,.45)}
+.chk-b{width:6px;height:6px;border:1px solid rgba(0,232,255,.17);border-radius:1.5px;flex-shrink:0;margin-top:1px}
+.more{font-size:6px;color:var(--mu);font-style:italic;padding:1px 0 0 10px}
+.noblg{text-align:center;font-size:8px;color:var(--mu);padding:10px 0}
+.tbr-wrap{flex-shrink:0;padding:3px 9px}
+.tbr{display:grid;grid-template-columns:44px 1fr 15px;gap:3px;align-items:center;margin-bottom:2.5px}
+.tbr-lbl{font-size:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbr-bg{height:2.5px;background:rgba(0,232,255,.05);border-radius:2px;overflow:hidden}
+.tbr-f{height:100%;border-radius:2px;transition:width .7s ease}
+.tbr-ct{font-size:7px;color:var(--mu);text-align:right}
+.con-wrap{flex-shrink:0;height:96px;border-top:1px solid var(--b0);overflow:hidden;display:flex;flex-direction:column}
+.con-hd{flex-shrink:0;padding:3px 9px 1px}
+.con-scroll{flex:1;overflow-y:auto;padding:1px 9px 4px}
+.con-scroll::-webkit-scrollbar{width:2px}
+.con-scroll::-webkit-scrollbar-thumb{background:var(--b0)}
+.cln{font-size:6.5px;line-height:1.8;word-break:break-all}
+.cln.pre{color:rgba(34,211,238,.55)}.cln.post{color:rgba(53,210,102,.55)}
+.cln.notif{color:rgba(255,176,32,.55)}.cln.stop{color:rgba(255,48,74,.55)}
+.cts{color:var(--mu);margin-right:4px}
+
+/* corners */
+.cnr{position:fixed;width:10px;height:10px;border-color:rgba(0,232,255,.13);border-style:solid;z-index:100;pointer-events:none}
+.cnr.tl{top:46px;left:0;border-width:1px 0 0 1px}.cnr.tr{top:46px;right:0;border-width:1px 1px 0 0}
+.cnr.bl{bottom:0;left:0;border-width:0 0 1px 1px}.cnr.br{bottom:0;right:0;border-width:0 1px 1px 0}
+</style>
+</head>
+<body>
+<canvas id="bgCanvas"></canvas>
+<div class="aurora"></div>
+<div class="grid-bg"></div>
+<div class="scanlines"></div>
+
+<!-- HEADER -->
+<header>
+  <div class="live-dot" id="liveDot"></div>
+  <div class="logo">GZ<em>.</em>AI <span style="color:var(--mu);font-weight:400;font-size:10.5px;letter-spacing:.06em">WORKFLOW CTRL</span></div>
+  <div class="badge cmd-badge" id="cmdBadge">—</div>
+  <div class="badge qa-badge" id="qaBadge">—</div>
+  <div class="sep"></div>
+  <div class="hstats">
+    <div class="hst"><span class="v" id="sTool">0</span><span class="l">工具</span></div>
+    <div class="hst"><span class="v" id="sAgent">0</span><span class="l">Agent</span></div>
+    <div class="hst"><span class="v" id="sDur">0s</span><span class="l">时长</span></div>
+  </div>
+</header>
+
+<!-- LEFT PANEL -->
+<div class="lp">
+  <div class="ag-wrap">
+    <div class="slabel">专家 Agents</div>
+    <div class="ag-grid" id="agGrid"></div>
+  </div>
+  <div class="ct-wrap">
+    <div class="slabel">当前工具</div>
+    <div class="ct-box" id="ctBox">
+      <div class="ct-ico">💤</div>
+      <div class="ct-body">
+        <div class="ct-name">待机中</div>
+        <div class="ct-pre">等待 Claude Code...</div>
+      </div>
+    </div>
+  </div>
+  <div class="log-panel">
+    <div class="log-inner"><div class="slabel">活动日志</div></div>
+    <div class="log-scroll" id="logScroll">
+      <div class="empty-log"><div class="ei">⚡</div><div class="et">启动 pnpm workflow<br>然后运行 /gz:coding</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- CENTER PANEL -->
+<div class="cp">
+
+  <!-- HUD BANNER -->
+  <div class="hud">
+    <div class="hud-live" id="hudLive">
+      <div class="hud-dot" id="hudDot"></div>
+      <span class="hud-live-txt">LIVE</span>
+    </div>
+    <div class="hud-sep"></div>
+    <div class="hud-cycle">
+      <span class="hud-cycle-lbl">CYCLE</span>
+      <span class="hud-cycle-num" id="hudCycle">—</span>
+    </div>
+    <div class="hud-arr">▶</div>
+    <div class="hud-node-wrap">
+      <span class="hud-node-lbl">NODE</span>
+      <span class="hud-node-val" id="hudNode" style="color:var(--mu)">—</span>
+    </div>
+    <div class="hud-task-wrap">
+      <div class="hud-task-lbl">CURRENT TASK</div>
+      <div class="hud-task-val" id="hudTask">等待 /gz:coding...</div>
+    </div>
+  </div>
+
+  <!-- 3D WORKFLOW SVG -->
+  <div class="wf-region">
+    <div class="wf-3d">
+      <div class="wf-tilt">
+        <!--
+          Layout: flat-top hex R=26  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"
+          Top row    y=80 : N1(52) N2(162) N3(272) N4(382) N5(492)
+          Bottom row y=174: N6(492) N7(382) N8(162)
+          viewBox: "0 0 610 246"
+        -->
+        <svg class="wf-svg" id="wfSvg" viewBox="0 0 610 246" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="mDim"  markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(0,200,255,.38)"/></marker>
+            <marker id="mDone" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(0,255,154,.4)"/></marker>
+            <marker id="mAct"  markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(0,232,255,.95)"/></marker>
+            <marker id="mLoop" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(176,112,255,.65)"/></marker>
+            <marker id="mFeat" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(0,255,154,.55)"/></marker>
+            <marker id="mRet"  markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0,6 2,0 4" fill="rgba(255,176,32,.65)"/></marker>
+            <filter id="glow2" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="b"/>
+              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <!-- motion paths -->
+            <path id="pm12" d="M78,80 L136,80"/>
+            <path id="pm23" d="M188,80 L248,80"/>
+            <path id="pm34" d="M296,80 L358,80"/>
+            <path id="pm45" d="M406,80 L468,80"/>
+            <path id="pm56" d="M492,103 L492,151"/>
+            <path id="pm67" d="M468,174 L406,174"/>
+            <path id="pm78" d="M358,174 L188,174"/>
+            <path id="pmTL" d="M374,152 C356,118 288,100 272,100"/>
+            <path id="pmFL" d="M370,186 C350,232 90,232 90,155 C90,86 116,80 136,80"/>
+            <path id="pmRet" d="M372,57 C356,30 290,30 272,57"/>
+          </defs>
+
+          <!-- ═══ SEGMENTS ═══ -->
+          <g id="seg-N1N2" class="flow-seg seg-dim">
+            <line class="seg-line" x1="78" y1="80" x2="136" y2="80" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--cy)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#pm12"/></animateMotion></circle>
+          </g>
+          <g id="seg-N2N3" class="flow-seg seg-dim">
+            <line class="seg-line" x1="188" y1="80" x2="248" y2="80" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--pu)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#pm23"/></animateMotion></circle>
+          </g>
+          <g id="seg-N3N4" class="flow-seg seg-dim">
+            <line class="seg-line" x1="296" y1="80" x2="358" y2="80" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--am)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#pm34"/></animateMotion></circle>
+          </g>
+          <g id="seg-N4N5" class="flow-seg seg-dim">
+            <line class="seg-line" x1="406" y1="80" x2="468" y2="80" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--cy)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#pm45"/></animateMotion></circle>
+          </g>
+          <g id="seg-N5N6" class="flow-seg seg-dim">
+            <line class="seg-line" x1="492" y1="103" x2="492" y2="151" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--pk)"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#pm56"/></animateMotion></circle>
+          </g>
+          <g id="seg-N6N7" class="flow-seg seg-dim">
+            <line class="seg-line" x1="468" y1="174" x2="406" y2="174" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--pk)"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#pm67"/></animateMotion></circle>
+          </g>
+          <g id="seg-N7N8" class="flow-seg seg-dim">
+            <line class="seg-line" x1="358" y1="174" x2="188" y2="174" marker-end="url(#mDim)"/>
+            <circle class="seg-particle" r="3" fill="var(--cy)"><animateMotion dur="1.9s" repeatCount="indefinite"><mpath href="#pm78"/></animateMotion></circle>
+          </g>
+
+          <!-- ═══ TASK LOOP N7→N3 ═══ -->
+          <path class="loop-task" d="M374,152 C356,118 288,100 272,100" marker-end="url(#mLoop)"/>
+          <circle r="2.5" fill="var(--pu)" opacity=".82">
+            <animateMotion dur="2s" repeatCount="indefinite"><mpath href="#pmTL"/></animateMotion>
+          </circle>
+          <rect class="lbg" x="298" y="108" width="52" height="13" rx="3" fill="rgba(55,0,130,.22)" stroke="rgba(176,112,255,.28)" stroke-width=".7"/>
+          <text class="ltxt" x="324" y="118" text-anchor="middle" fill="rgba(176,112,255,.9)" id="tlLbl">Task ×0</text>
+
+          <!-- ═══ FEATURE LOOP N7→N2 ═══ -->
+          <path class="loop-feat" d="M370,186 C350,232 90,232 90,155 C90,86 116,80 136,80" marker-end="url(#mFeat)"/>
+          <circle r="2.5" fill="var(--gn)" opacity=".82">
+            <animateMotion dur="3s" repeatCount="indefinite"><mpath href="#pmFL"/></animateMotion>
+          </circle>
+          <rect class="lbg" x="168" y="224" width="62" height="13" rx="3" fill="rgba(0,42,20,.22)" stroke="rgba(0,255,154,.24)" stroke-width=".7"/>
+          <text class="ltxt" x="199" y="234" text-anchor="middle" fill="rgba(0,255,154,.88)" id="flLbl">Feature ×0</text>
+
+          <!-- ═══ RETRY ARC N4→N3 ═══ -->
+          <path id="retryArc" class="loop-retry" d="M372,57 C356,30 290,30 272,57" marker-end="url(#mRet)"/>
+          <rect class="lbg" x="298" y="22" width="48" height="13" rx="3" opacity="0"
+            fill="rgba(65,38,0,.26)" stroke="rgba(255,176,32,.3)" stroke-width=".7" id="retryBg"/>
+          <text class="ltxt" x="322" y="32" text-anchor="middle" fill="var(--am)" id="retryLbl" opacity="0">重试 ×0</text>
+
+          <!-- ═══ NODES ═══ -->
+          <!-- Top label nodes: name at y=+36 (below hex) -->
+          <!-- Bottom row nodes: name at y=-34 (above hex)  -->
+
+          <!-- N1 (52,80) Init -->
+          <g class="hnode" id="wn-N1" transform="translate(52,80)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N1</text>
+            <text class="hname" x="0" y="35" text-anchor="middle">Init</text>
+          </g>
+
+          <!-- N2 (162,80) Feature -->
+          <g class="hnode" id="wn-N2" transform="translate(162,80)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N2</text>
+            <text class="hname" x="0" y="35" text-anchor="middle">Feature</text>
+          </g>
+
+          <!-- N3 (272,80) Execute — purple -->
+          <g class="hnode n3" id="wn-N3" transform="translate(272,80)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N3</text>
+            <text class="hname" x="0" y="35" text-anchor="middle">Execute</text>
+          </g>
+
+          <!-- N4 (382,80) Review — amber -->
+          <g class="hnode n4" id="wn-N4" transform="translate(382,80)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N4</text>
+            <text class="hname" x="0" y="35" text-anchor="middle">Review</text>
+          </g>
+
+          <!-- N5 (492,80) Mark -->
+          <g class="hnode" id="wn-N5" transform="translate(492,80)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N5</text>
+            <text class="hname" x="0" y="35" text-anchor="middle">Mark</text>
+          </g>
+
+          <!-- N6 (492,174) QA — pink — name ABOVE -->
+          <g class="hnode n6" id="wn-N6" transform="translate(492,174)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N6</text>
+            <text class="hname" x="0" y="-32" text-anchor="middle">QA</text>
+          </g>
+
+          <!-- N7 (382,174) Context — name ABOVE -->
+          <g class="hnode" id="wn-N7" transform="translate(382,174)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N7</text>
+            <text class="hname" x="0" y="-32" text-anchor="middle">Context</text>
+          </g>
+
+          <!-- N8 (162,174) Archive — name ABOVE -->
+          <g class="hnode" id="wn-N8" transform="translate(162,174)">
+            <polygon class="hglow"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hbg"    points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <polygon class="hring"  points="26,0 13,22.5 -13,22.5 -26,0 -13,-22.5 13,-22.5"/>
+            <circle class="hpulse"  cx="0" cy="0" r="20"/>
+            <circle class="hpulse2" cx="0" cy="0" r="20"/>
+            <text class="hlbl" x="0" y="0" text-anchor="middle" dominant-baseline="middle">N8</text>
+            <text class="hname" x="0" y="-32" text-anchor="middle">Archive</text>
+          </g>
+        </svg>
+      </div><!-- /wf-tilt -->
+    </div><!-- /wf-3d -->
+  </div><!-- /wf-region -->
+
+  <!-- CHIPS ROW + ROBOT -->
+  <div class="chips-row">
+    <div class="lchip n" id="chipNode">— 待机 —</div>
+    <div class="lchip t" id="chipTask">Task Loop: 0</div>
+    <div class="lchip f" id="chipFeat">Feature Loop: 0</div>
+    <div class="lchip r" id="chipRetry">重试: 0</div>
+    <!-- AI ROBOT CHARACTER -->
+    <div class="bot-wrap" id="botWrap">
+      <svg class="bot-svg idle-anim" id="botSvg" viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg">
+        <!-- Antenna -->
+        <line x1="50" y1="10" x2="50" y2="22" stroke="rgba(0,232,255,.6)" stroke-width="2" stroke-linecap="round"/>
+        <circle id="botAntenna" class="bot-antenna" cx="50" cy="7" r="3.5" fill="var(--cy)"/>
+        <!-- Head (flat-top hex) -->
+        <polygon id="botHead" class="bot-head-hex idle"
+          points="50,16 69,27 69,48 50,59 31,48 31,27"/>
+        <!-- Eyes -->
+        <circle id="botEyeL" class="bot-eye idle" cx="41" cy="36" r="4"/>
+        <circle id="botEyeR" class="bot-eye idle" cx="59" cy="36" r="4"/>
+        <!-- Inner eye highlight -->
+        <circle cx="42" cy="35" r="1.5" fill="rgba(255,255,255,.6)" id="botEyeLH"/>
+        <circle cx="60" cy="35" r="1.5" fill="rgba(255,255,255,.6)" id="botEyeRH"/>
+        <!-- Mouth bar -->
+        <rect id="botMouth" x="39" y="48" width="22" height="5" rx="2.5" fill="rgba(0,200,255,.25)" stroke="rgba(0,200,255,.4)" stroke-width=".8"/>
+        <!-- Body -->
+        <rect id="botBody" class="bot-body-rect idle" x="28" y="62" width="44" height="38" rx="7"/>
+        <!-- Chest core -->
+        <circle id="botCore" class="bot-core idle" cx="50" cy="76" r="7"/>
+        <circle id="botCoreInner" cx="50" cy="76" r="3.5" fill="rgba(0,0,15,.6)"/>
+        <!-- Arms -->
+        <line id="botArmL" class="bot-arm idle" x1="28" y1="66" x2="12" y2="80"/>
+        <line id="botArmR" class="bot-arm idle" x1="72" y1="66" x2="88" y2="80"/>
+        <!-- Arm tips (hands) -->
+        <circle id="botHandL" cx="12" cy="80" r="4" fill="rgba(2,4,22,.9)" stroke="rgba(0,200,255,.3)" stroke-width="1.2"/>
+        <circle id="botHandR" cx="88" cy="80" r="4" fill="rgba(2,4,22,.9)" stroke="rgba(0,200,255,.3)" stroke-width="1.2"/>
+        <!-- Legs -->
+        <rect x="34" y="100" width="11" height="18" rx="4" fill="rgba(2,4,22,.9)" stroke="rgba(0,200,255,.22)" stroke-width="1"/>
+        <rect x="55" y="100" width="11" height="18" rx="4" fill="rgba(2,4,22,.9)" stroke="rgba(0,200,255,.22)" stroke-width="1"/>
+        <!-- Feet -->
+        <rect x="31" y="115" width="14" height="5" rx="2" fill="rgba(0,200,255,.3)"/>
+        <rect x="55" y="115" width="14" height="5" rx="2" fill="rgba(0,200,255,.3)"/>
+      </svg>
+      <div class="bot-state-txt" id="botTxt">IDLE</div>
+    </div>
+  </div>
+
+  <!-- TOOL STREAM -->
+  <div class="center-bottom">
+    <div class="cb-hdr"><div class="slabel">工具调用流</div></div>
+    <div class="log-scroll" id="cLogScroll">
+      <div class="empty-log"><div class="ei">🌌</div><div class="et">等待工具调用...</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- RIGHT PANEL -->
+<div class="rp">
+  <div class="prg-wrap">
+    <div class="slabel">整体进度</div>
+    <div class="prg-row">
+      <span class="prg-label" id="prgLabel">计算中...</span>
+      <span class="prg-pct" id="prgPct">—</span>
+    </div>
+    <div class="prg-track"><div class="prg-fill" id="prgFill" style="width:0%"></div></div>
+    <div class="prg-meta">
+      <span id="prgDone">0</span><span style="margin:0 2px;color:var(--mu)">完成 /</span><span id="prgTotal">—</span>
+    </div>
+  </div>
+  <div class="task-wrap">
+    <div class="task-inner"><div class="slabel">待完成工作</div></div>
+    <div class="task-scroll" id="taskScroll">
+      <div class="noblg">读取 TASKS_BACKLOG.md...</div>
+    </div>
+  </div>
+  <div class="tbr-wrap">
+    <div class="slabel">工具分布</div>
+    <div id="tbrList"><div style="color:var(--mu);font-size:7.5px;text-align:center;padding:4px">暂无数据</div></div>
+  </div>
+  <div class="con-wrap">
+    <div class="con-hd"><div class="slabel">控制台</div></div>
+    <div class="con-scroll" id="conScroll"></div>
+  </div>
+</div>
+
+<div class="cnr tl"></div><div class="cnr tr"></div><div class="cnr bl"></div><div class="cnr br"></div>
+
+<script>
+// ══ Stars ═══════════════════════════════════════════════════════
+(function(){
+  const c=document.getElementById('bgCanvas'),ctx=c.getContext('2d'),stars=[];
+  function resize(){c.width=innerWidth;c.height=innerHeight}
+  resize();window.addEventListener('resize',resize);
+  for(let i=0;i<200;i++) stars.push({
+    x:Math.random()*innerWidth,y:Math.random()*innerHeight,
+    r:Math.random()*1.4+.2,o:Math.random()*.5+.08,do:(Math.random()-.5)*.007
+  });
+  function draw(){
+    ctx.clearRect(0,0,c.width,c.height);
+    for(const s of stars){s.o+=s.do;if(s.o>.75||s.o<.04)s.do*=-1;
+      ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+      ctx.fillStyle='rgba(175,212,255,'+s.o.toFixed(2)+')';ctx.fill();}
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+// ══ Meta ════════════════════════════════════════════════════════
+const TMETA={
+  Bash:{icon:'⚡',color:'#f59e0b',label:'Bash'},Read:{icon:'📖',color:'#60a5fa',label:'Read'},
+  Write:{icon:'✍️',color:'#34d399',label:'Write'},Edit:{icon:'✏️',color:'#a78bfa',label:'Edit'},
+  Agent:{icon:'🤖',color:'#f472b6',label:'Agent'},WebFetch:{icon:'🌐',color:'#22d3ee',label:'Fetch'},
+  WebSearch:{icon:'🔍',color:'#38bdf8',label:'Search'},TodoWrite:{icon:'📋',color:'#fb923c',label:'Todo'},
+  Skill:{icon:'⚙️',color:'#4ade80',label:'Skill'},Glob:{icon:'🗂️',color:'#94a3b8',label:'Glob'},
+  Grep:{icon:'🔎',color:'#64748b',label:'Grep'},Notification:{icon:'💬',color:'#475569',label:'Notify'},
+  Stop:{icon:'🏁',color:'#6b7280',label:'Stop'},
+};
+const AMETA={
+  'gz-frontend-engineer':{icon:'🎨',color:'#8b5cf6',label:'Frontend'},
+  'gz-backend-engineer':{icon:'⚙️',color:'#00d4ff',label:'Backend'},
+  'gz-database-engineer':{icon:'🗃️',color:'#00ff88',label:'Database'},
+  'gz-qa-engineer':{icon:'🧪',color:'#f472b6',label:'QA'},
+};
+const NODES=['N1','N2','N3','N4','N5','N6','N7','N8'];
+const PHASE_COLORS=['#ff4560','#00d4ff','#f59e0b','#64748b'];
+const NODE_NAMES={N1:'初始化',N2:'Feature',N3:'执行任务',N4:'代码审查',N5:'标记完成',N6:'QA评估',N7:'清理上下文',N8:'归档交付'};
+const FLOW_ORDER=['N1','N2','N3','N4','N5','N6','N7','N8'];
+const ALL_SEGS=['seg-N1N2','seg-N2N3','seg-N3N4','seg-N4N5','seg-N5N6','seg-N6N7','seg-N7N8'];
+const SEG_TO_IDX={'seg-N1N2':1,'seg-N2N3':2,'seg-N3N4':3,'seg-N4N5':4,'seg-N5N6':5,'seg-N6N7':6,'seg-N7N8':7};
+
+// build agents
+const agGrid=document.getElementById('agGrid');
+Object.entries(AMETA).forEach(([k,m])=>{
+  const d=document.createElement('div');
+  d.className='ag-pod';d.id='ag-'+k;d.style.setProperty('--ac',m.color);
+  d.innerHTML='<div class="ag-head"><span class="ag-ico">'+m.icon+'</span><span class="ag-name">'+m.label+'</span><span class="ag-pulse"></span></div><div class="ag-task" id="agt-'+k+'">—</div><div class="ag-cnt" id="agc-'+k+'">调用: 0</div>';
+  agGrid.appendChild(d);
+});
+
+// ══ State ═══════════════════════════════════════════════════════
+let startTime=null,totalTools=0,activeTimer=null;
+let pendingStart={},doneNodes=new Set(),currentNid=null;
+
+// ══ Robot ════════════════════════════════════════════════════════
+function setBotState(state){
+  // state: 'idle' | 'working' | 'reviewing' | 'qa' | 'done'
+  const svg=document.getElementById('botSvg');
+  const txt=document.getElementById('botTxt');
+  const parts=['botHead','botEyeL','botEyeR','botBody','botCore'];
+  const arms=['botArmL','botArmR'];
+  // Remove all state classes
+  const states=['idle','working','reviewing','qa','done'];
+  svg.className='bot-svg';
+  parts.forEach(id=>{
+    const el=document.getElementById(id);if(!el)return;
+    states.forEach(s=>el.classList.remove(s));
+    el.classList.add(state);
+  });
+  arms.forEach(id=>{
+    const el=document.getElementById(id);if(!el)return;
+    states.forEach(s=>el.classList.remove(s));
+    el.classList.add(state);
+    el.classList.remove('arm-l-work','arm-r-work');
+  });
+  txt.className='bot-state-txt '+state;
+  const armL=document.getElementById('botArmL');
+  const armR=document.getElementById('botArmR');
+  if(state==='working'){
+    svg.classList.add('work-anim');
+    if(armL)armL.classList.add('arm-l-work');
+    if(armR)armR.classList.add('arm-r-work');
+    txt.textContent='CODING';
+  } else if(state==='reviewing'){
+    svg.classList.add('idle-anim');
+    txt.textContent='REVIEW';
+  } else if(state==='qa'){
+    svg.classList.add('work-anim');
+    txt.textContent='TESTING';
+  } else if(state==='done'){
+    svg.classList.add('done-anim');
+    txt.textContent='DONE!';
+  } else {
+    svg.classList.add('idle-anim');
+    txt.textContent='IDLE';
+  }
+  // Sync hand colors
+  const handColor=state==='working'?'rgba(176,112,255,.5)':state==='reviewing'?'rgba(255,176,32,.5)':state==='qa'?'rgba(255,69,176,.5)':state==='done'?'rgba(0,255,154,.5)':'rgba(0,200,255,.3)';
+  ['botHandL','botHandR'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.setAttribute('stroke',handColor);
+  });
+  ['botEyeLH','botEyeRH'].forEach(id=>{const el=document.getElementById(id);if(el)el.setAttribute('fill','rgba(255,255,255,.65)');});
+}
+
+function syncBot(nodeId){
+  if(!nodeId){setBotState('idle');return;}
+  if(nodeId==='N3')setBotState('working');
+  else if(nodeId==='N4')setBotState('reviewing');
+  else if(nodeId==='N6')setBotState('qa');
+  else if(nodeId==='N8')setBotState('done');
+  else setBotState('idle');
+}
+
+// ══ Live ════════════════════════════════════════════════════════
+function setLive(on){
+  document.getElementById('liveDot').className='live-dot'+(on?' on':'');
+  document.getElementById('hudDot').className='hud-dot'+(on?' on':'');
+  document.getElementById('hudLive').className='hud-live'+(on?' on':'');
+  if(on){clearTimeout(activeTimer);activeTimer=setTimeout(()=>setLive(false),25000);}
+}
+
+setInterval(()=>{
+  if(!startTime)return;
+  const s=Math.round((Date.now()-startTime)/1000),m=Math.floor(s/60);
+  document.getElementById('sDur').textContent=m>0?m+'m'+(s%60)+'s':s+'s';
+},1000);
+
+function fmt(ts){return new Date(ts).toTimeString().slice(0,8);}
+function fmtDur(ms){if(!ms||ms<0)return '';return ms<1000?ms+'ms':(ms/1000).toFixed(1)+'s';}
+
+// ══ Flow ════════════════════════════════════════════════════════
+function updateFlow(currentNode){
+  const curIdx=FLOW_ORDER.indexOf(currentNode);
+  ALL_SEGS.forEach(sid=>{
+    const el=document.getElementById(sid);if(!el)return;
+    const segIdx=SEG_TO_IDX[sid];
+    el.className='flow-seg';
+    if(curIdx<0)el.classList.add('seg-dim');
+    else if(segIdx<curIdx)el.classList.add('seg-done');
+    else if(segIdx===curIdx)el.classList.add('seg-active');
+    else el.classList.add('seg-dim');
+  });
+}
+
+// ══ HUD ═════════════════════════════════════════════════════════
+function updateHUD(s){
+  document.getElementById('hudCycle').textContent=s.currentCycle||'—';
+  document.getElementById('hudTask').textContent=s.currentTask||'—';
+  const nEl=document.getElementById('hudNode');
+  const prev=nEl.textContent;
+  if(s.currentNode){
+    nEl.textContent=s.currentNode;
+    // glitch effect on node change
+    if(prev!==s.currentNode){
+      nEl.classList.remove('glitch');void nEl.offsetWidth;nEl.classList.add('glitch');
+    }
+    if(s.currentNode==='N3')nEl.style.color='var(--pu)';
+    else if(s.currentNode==='N4')nEl.style.color='var(--am)';
+    else if(s.currentNode==='N6')nEl.style.color='var(--pk)';
+    else if(s.currentNode==='N8')nEl.style.color='var(--gn)';
+    else nEl.style.color='var(--cy)';
+  } else {
+    nEl.textContent='—';nEl.style.color='var(--mu)';
+  }
+}
+
+// ══ Nodes ═══════════════════════════════════════════════════════
+function setNode(id,completed){
+  if(completed)completed.forEach(n=>doneNodes.add(n));
+  if(id)currentNid=id;
+  NODES.forEach(nid=>{
+    const el=document.getElementById('wn-'+nid);if(!el)return;
+    el.classList.remove('active','done');
+    if(nid===currentNid)el.classList.add('active');
+    else if(doneNodes.has(nid))el.classList.add('done');
+  });
+  updateFlow(currentNid);
+  syncBot(currentNid);
+  const nc=document.getElementById('chipNode');
+  if(currentNid){nc.textContent=currentNid+' · '+(NODE_NAMES[currentNid]||'');nc.className='lchip n';}
+}
+
+function updateLoops(s){
+  const tl=s.taskLoopCount||0,fl=s.featureLoopCount||0,rt=s.retryCount||0;
+  const tEl=document.getElementById('tlLbl');if(tEl)tEl.textContent='Task \xd7'+tl;
+  const fEl=document.getElementById('flLbl');if(fEl)fEl.textContent='Feature \xd7'+fl;
+  const rEl=document.getElementById('retryLbl');if(rEl){rEl.textContent='重试 \xd7'+rt;rEl.setAttribute('opacity',rt>0?'1':'0');}
+  const rBg=document.getElementById('retryBg');if(rBg)rBg.setAttribute('opacity',rt>0?'1':'0');
+  const ra=document.getElementById('retryArc');if(ra)ra.className='loop-retry'+(rt>0?' on':'');
+  const ct=document.getElementById('chipTask');if(ct)ct.textContent='Task Loop: '+tl;
+  const cf=document.getElementById('chipFeat');if(cf)cf.textContent='Feature Loop: '+fl;
+  const cr=document.getElementById('chipRetry');if(cr){cr.className='lchip r'+(rt>0?' on':'');cr.textContent='重试: '+rt;}
+}
+
+// ══ Agents ══════════════════════════════════════════════════════
+function updateAgents(agents){
+  let total=0;
+  Object.entries(agents).forEach(([k,a])=>{
+    const pod=document.getElementById('ag-'+k);
+    const task=document.getElementById('agt-'+k);
+    const cnt=document.getElementById('agc-'+k);
+    if(!pod)return;
+    if(a.active){pod.classList.add('on');if(task)task.textContent=(a.task||'工作中...').slice(0,28);}
+    else{pod.classList.remove('on');if(task)task.textContent=a.totalCalls>0?'完成 '+a.totalCalls+' 次':'—';}
+    if(cnt)cnt.textContent='调用: '+a.totalCalls;
+    total+=a.totalCalls;
+  });
+  const el=document.getElementById('sAgent');if(el)el.textContent=total;
+}
+
+// ══ Tool ════════════════════════════════════════════════════════
+function updateTool(tool){
+  const box=document.getElementById('ctBox');
+  if(!tool){box.className='ct-box';box.innerHTML='<div class="ct-ico">💤</div><div class="ct-body"><div class="ct-name">待机中</div><div class="ct-pre">等待下一次工具调用...</div></div>';return;}
+  const m=TMETA[tool.name]||{icon:'🔧',color:'#94a3b8'};
+  const aLabel=tool.agentName?AMETA[tool.agentName]?.label:'';
+  box.className='ct-box run';
+  box.innerHTML='<div class="ct-ico">'+m.icon+'</div><div class="ct-body"><div class="ct-name" style="color:'+m.color+'">'+tool.name+'<span class="ct-run">运行中</span></div><div class="ct-pre">'+(tool.preview||'—')+'</div>'+(tool.sessionRole==='subagent'?'<div class="ct-sub">[subagent'+(aLabel?' · '+aLabel:'')+']</div>':'')+'</div><div class="ct-ts">'+fmt(tool.startTime)+'</div>';
+}
+
+// ══ Bars ════════════════════════════════════════════════════════
+function updateBars(counts){
+  const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,7);
+  if(!sorted.length)return;
+  const max=sorted[0][1]||1;
+  document.getElementById('tbrList').innerHTML=sorted.map(([t,c])=>{
+    const m=TMETA[t]||{color:'#64748b',label:t};
+    return '<div class="tbr"><span class="tbr-lbl" style="color:'+m.color+'">'+(m.label||t)+'</span><div class="tbr-bg"><div class="tbr-f" style="width:'+Math.round(c/max*100)+'%;background:'+m.color+'"></div></div><span class="tbr-ct">'+c+'</span></div>';
+  }).join('');
+}
+
+// ══ Backlog ═════════════════════════════════════════════════════
+function updateBacklog(backlog,currentCycle){
+  if(!backlog||!backlog.phases){document.getElementById('taskScroll').innerHTML='<div class="noblg">未找到 TASKS_BACKLOG.md</div>';return;}
+  let tdone=0,tpend=0;
+  backlog.phases.forEach(p=>{tdone+=p.totalDone;tpend+=p.totalPending;});
+  const grand=tdone+tpend,pct=grand?Math.round(tdone/grand*100):0;
+  document.getElementById('prgFill').style.width=pct+'%';
+  document.getElementById('prgLabel').textContent='完成进度';
+  document.getElementById('prgPct').textContent=pct+'%';
+  document.getElementById('prgDone').textContent=tdone;
+  document.getElementById('prgTotal').textContent=grand;
+  let focusNum=null;
+  if(currentCycle){const m=currentCycle.match(/Cycle (\d+)/);if(m)focusNum=m[1];}
+  if(!focusNum){outer:for(const p of backlog.phases)for(const c of p.cycles){if(!c.isDone&&c.totalPending>0){focusNum=c.num;break outer;}}}
+  let html='';
+  backlog.phases.forEach((p,pi)=>{
+    const col=PHASE_COLORS[pi]||'#64748b';
+    const pnum=(p.title.match(/Phase (\d+)/)||[])[1]||'?';
+    const done=p.totalPending===0;
+    html+='<div class="ph-row" onclick="togglePh('+pi+')">'+'<div class="ph-dot" style="background:'+(done?'var(--gn)':col)+'"'+(done?';box-shadow:0 0 5px var(--gn)':'')+' ></div><span class="ph-nm">Phase '+pnum+'</span><span class="ph-ct">'+(done?'✅':p.totalPending+' 待')+'</span></div>';
+    if(!done){
+      html+='<div id="ph-blk-'+pi+'">';
+      p.cycles.forEach(c=>{
+        if(c.isDone)return;
+        const isFocus=c.num===focusNum;
+        const cname=c.title.replace(/^Cycle \d+: /,'');
+        html+='<div class="cy-card'+(isFocus?' cur':'')+'"><div class="cy-hd"><span style="color:'+(isFocus?'var(--gn)':col)+'">C'+c.num+'</span><span style="color:var(--mu);font-weight:400;margin-left:3px">'+cname+'</span>'+(isFocus?'<span class="cy-cur">当前</span>':'')+'<span style="margin-left:auto;font-size:6.5px;color:var(--mu)">'+c.totalDone+'/'+(c.totalDone+c.totalPending)+'</span></div>';
+        c.tasks.forEach(t=>{
+          if(!t.pending.length&&!t.done)return;
+          const tn=t.title.replace(/^Task [\d.]+: /,'');
+          html+='<div class="ti-row"><div class="ti-nm">'+tn+(t.pending.length?'<span class="ti-badge">'+t.pending.length+'</span>':'')+' </div>';
+          const mx=isFocus?5:2;
+          t.pending.slice(0,mx).forEach(it=>{html+='<div class="chk"><div class="chk-b"></div><span>'+it+'</span></div>';});
+          if(t.pending.length>mx)html+='<div class="more">...还有 '+(t.pending.length-mx)+' 项</div>';
+          html+='</div>';
+        });
+        html+='</div>';
+      });
+      html+='</div>';
+    }
+  });
+  document.getElementById('taskScroll').innerHTML=html||'<div class="noblg">🎉 所有任务已完成</div>';
+}
+function togglePh(i){const e=document.getElementById('ph-blk-'+i);if(e)e.style.display=e.style.display==='none'?'':'none';}
+
+// ══ Log rows ════════════════════════════════════════════════════
+function addLogRow(ev,scrollId){
+  const body=document.getElementById(scrollId);if(!body)return;
+  const empty=body.querySelector('.empty-log');if(empty)body.innerHTML='';
+  const m=TMETA[ev.tool_name||ev.hook_event_name]||{icon:'🔧',color:'#94a3b8'};
+  const isSub=ev._sessionRole==='subagent';
+  const row=document.createElement('div');row.className='lr'+(isSub?' sub':'');
+  row.innerHTML='<span class="l-ts">'+fmt(ev.timestamp)+'</span><span class="l-ico">'+m.icon+'</span><span class="l-tool" style="color:'+m.color+'">'+(ev.tool_name||ev.hook_event_name||'')+'</span><span class="l-pre">'+(ev._preview||ev.message||'')+'</span><span class="l-dur">'+fmtDur(ev._duration)+'</span>';
+  body.insertBefore(row,body.firstChild);
+  while(body.children.length>80)body.removeChild(body.lastChild);
+}
+
+// ══ Console ═════════════════════════════════════════════════════
+function addConsole(ev){
+  const body=document.getElementById('conScroll');
+  const t=(ev.hook_event_name||'').toLowerCase().replace('tooluse','');
+  const cls=t==='pre'?'pre':t==='post'?'post':t==='stop'?'stop':'notif';
+  const d=document.createElement('div');d.className='cln '+cls;
+  const lbl=(t||'').toUpperCase().padEnd(5);
+  const tool=(ev.tool_name||ev.hook_event_name||'').padEnd(10);
+  const pre=(ev._preview||ev.message||'').slice(0,100);
+  d.innerHTML='<span class="cts">'+fmt(ev.timestamp)+'</span>'+lbl+' '+tool+' '+pre;
+  body.appendChild(d);body.scrollTop=body.scrollHeight;
+  while(body.children.length>60)body.removeChild(body.firstChild);
+}
+
+// ══ Flash ════════════════════════════════════════════════════════
+function flashNum(id,val){
+  const el=document.getElementById(id);if(!el)return;
+  if(el.textContent===String(val))return;
+  el.textContent=val;el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');
+}
+
+// ══ Apply state ══════════════════════════════════════════════════
+function applyState(s){
+  if(s.startTime)startTime=s.startTime;
+  totalTools=s.totalTools||0;flashNum('sTool',totalTools);
+  if(s.currentNode||s.completedNodes)setNode(s.currentNode,s.completedNodes||[]);
+  updateLoops(s);updateHUD(s);
+  if(s.activeCommand){const e=document.getElementById('cmdBadge');e.textContent=s.activeCommand;e.className='badge cmd-badge on';}
+  if(s.qaScore!=null){const e=document.getElementById('qaBadge');e.textContent='QA '+s.qaScore;e.className='badge qa-badge on';}
+  updateAgents(s.agents||{});updateTool(s.currentTool);
+  updateBars(s.toolCounts||{});updateBacklog(s.backlog,s.currentCycle);
+  (s.events||[]).forEach(ev=>{addLogRow(ev,'logScroll');addLogRow(ev,'cLogScroll');addConsole(ev);});
+  if((s.events||[]).length)setLive(true);
+}
+
+// ══ Handle event ═════════════════════════════════════════════════
+function handleEv(ev){
+  if(!startTime)startTime=ev.timestamp;
+  const t=ev.hook_event_name;
+  if(t==='PreToolUse'){
+    totalTools++;flashNum('sTool',totalTools);
+    pendingStart[ev.tool_name]=ev.timestamp;
+    setLive(true);
+    updateTool({name:ev.tool_name,preview:ev._preview,startTime:ev.timestamp,sessionRole:ev._sessionRole,agentName:ev._agentName});
+    addLogRow(ev,'logScroll');addLogRow(ev,'cLogScroll');addConsole(ev);
+  }
+  if(t==='PostToolUse'){
+    const dur=pendingStart[ev.tool_name]?ev.timestamp-pendingStart[ev.tool_name]:null;
+    delete pendingStart[ev.tool_name];ev._duration=dur;
+    updateTool(null);addLogRow(ev,'logScroll');addLogRow(ev,'cLogScroll');addConsole(ev);
+  }
+  if(t==='Notification')addConsole(ev);
+  if(t==='Stop'){setLive(false);updateTool(null);addConsole(ev);}
+}
+
+// ══ SSE ══════════════════════════════════════════════════════════
+const es=new EventSource('/events');
+es.addEventListener('init',e=>applyState(JSON.parse(e.data)));
+es.addEventListener('event',e=>handleEv(JSON.parse(e.data)));
+es.addEventListener('state',e=>{
+  const s=JSON.parse(e.data);
+  if(s.currentNode||s.completedNodes)setNode(s.currentNode,s.completedNodes||[]);
+  updateLoops(s);updateHUD(s);
+  if(s.activeCommand){const el=document.getElementById('cmdBadge');el.textContent=s.activeCommand;el.className='badge cmd-badge on';}
+  if(s.qaScore!=null){const el=document.getElementById('qaBadge');el.textContent='QA '+s.qaScore;el.className='badge qa-badge on';}
+  updateAgents(s.agents||{});updateTool(s.currentTool);
+  updateBars(s.toolCounts||{});updateBacklog(s.backlog,s.currentCycle);
+});
+es.onerror=()=>setLive(false);
+</script>
+</body>
+</html>

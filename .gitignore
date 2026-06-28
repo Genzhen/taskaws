@@ -7,6 +7,7 @@ node_modules
 dist
 build
 *.tsbuildinfo
+.aws-sam
 
 # Generated files
 apps/web/src/routeTree.gen.ts
@@ -52,3 +53,11 @@ coverage
 .cache
 tmp
 temp
+
+# AI workflow runtime artifacts (regenerate locally)
+codex-review/
+.claude/workflow-visualizer/events.jsonl
+.claude/workflow-visualizer/state-snapshot.json
+
+# Local Claude Code overrides (per-machine MCP choices, never share)
+.claude/settings.local.json

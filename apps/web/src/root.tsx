@@ -10,6 +10,7 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useLocation,
 } from "react-router";
 
 import type { Route } from "./+types/root";
@@ -22,7 +23,7 @@ export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
   {
     rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
+    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Geist:wght@600&family=JetBrains+Mono:wght@400;500&display=swap",
   },
 ];
 
@@ -35,7 +36,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body>
+      <body className="bg-background text-foreground">
         {children}
         <ScrollRestoration />
         <Scripts />
@@ -45,6 +46,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  const location = useLocation();
+  // 首页自带 TopBar，跳过全局 Header 避免重复
+  const showHeader = location.pathname !== "/";
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider
@@ -53,8 +58,8 @@ export default function App() {
         disableTransitionOnChange
         storageKey="vite-ui-theme"
       >
-        <div className="grid grid-rows-[auto_1fr] h-svh">
-          <Header />
+        <div className={showHeader ? "grid grid-rows-[auto_1fr] h-svh" : "h-svh"}>
+          {showHeader && <Header />}
           <Outlet />
         </div>
         <Toaster richColors />

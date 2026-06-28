@@ -29,7 +29,7 @@ export default function SignUpForm({ onSwitchToSignIn }: { onSwitchToSignIn: () 
         },
         {
           onSuccess: () => {
-            navigate("/dashboard");
+            navigate("/");
             toast.success("Sign up successful");
           },
           onError: (error) => {

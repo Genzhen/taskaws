@@ -15,7 +15,8 @@
     "db:push": "turbo -F @taskaws/db db:push",
     "db:studio": "turbo -F @taskaws/db db:studio",
     "db:generate": "turbo -F @taskaws/db db:generate",
-    "db:migrate": "turbo -F @taskaws/db db:migrate"
+    "db:migrate": "turbo -F @taskaws/db db:migrate",
+    "build:api": "turbo -F server build:api"
   },
   "dependencies": {
     "@taskaws/env": "workspace:*",

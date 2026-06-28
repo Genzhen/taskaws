@@ -34,6 +34,9 @@ Parameters:
     Type: String
     NoEcho: true
     Description: PostgreSQL reader connection string
+  DatabaseSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group attached to the RDS PostgreSQL instances
   BetterAuthSecret:
     Type: String
     NoEcho: true
@@ -63,6 +66,21 @@ Resources:
           ToPort: 5432
           CidrIp: 0.0.0.0/0
           Description: PostgreSQL egress to the existing RDS security group
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS egress for GitHub API requests
+
+  DatabaseIngressFromLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow taskaws Lambda to connect to PostgreSQL
+      GroupId: !Ref DatabaseSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !GetAtt LambdaSecurityGroup.GroupId
 
   TaskAwsApiFunction:
     Type: AWS::Serverless::Function

@@ -14,6 +14,7 @@ name: Deploy to AWS
 #   DATABASE_WRITER_URL, DATABASE_READER_URL        — RDS PostgreSQL connection strings
 #   BETTER_AUTH_SECRET                              — auth signing secret (>=32 chars)
 #   AWS_S3_BUCKET                                   — frontend static hosting
+#   RDS_WRITER_INSTANCE_ID                          — (optional) default task-db-writer
 #   AWS_CLOUDFRONT_DISTRIBUTION_ID                  — (optional) cache invalidation
 #
 # NOT required (removed):
@@ -29,6 +30,7 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
   FRONTEND_ORIGIN: http://${{ secrets.AWS_S3_BUCKET }}.s3-website-${{ secrets.AWS_REGION || 'us-east-1' }}.amazonaws.com
+  RDS_WRITER_INSTANCE_ID: ${{ secrets.RDS_WRITER_INSTANCE_ID || 'task-db-writer' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -105,6 +107,20 @@ jobs:
         with:
           use-installer: true
 
+      - name: Discover RDS security group
+        run: |
+          RDS_SECURITY_GROUP_ID=$(aws rds describe-db-instances \
+            --db-instance-identifier "${{ env.RDS_WRITER_INSTANCE_ID }}" \
+            --query "DBInstances[0].VpcSecurityGroups[0].VpcSecurityGroupId" \
+            --output text)
+
+          if [ -z "$RDS_SECURITY_GROUP_ID" ] || [ "$RDS_SECURITY_GROUP_ID" = "None" ]; then
+            echo "::error::Unable to discover RDS security group for ${{ env.RDS_WRITER_INSTANCE_ID }}"
+            exit 1
+          fi
+
+          echo "RDS_SECURITY_GROUP_ID=$RDS_SECURITY_GROUP_ID" >> "$GITHUB_ENV"
+
       - name: Validate deployment secrets
         env:
           VPC_ID: ${{ secrets.VPC_ID }}
@@ -133,6 +149,7 @@ jobs:
           require_match "VPC_ID" "$VPC_ID" '^vpc-[0-9a-f]+$' "Use the real AWS VPC ID, for example vpc-0123456789abcdef0."
           require_match "SUBNET_A" "$SUBNET_A" '^subnet-[0-9a-f]+$' "Use the real private subnet ID, not a friendly name."
           require_match "SUBNET_B" "$SUBNET_B" '^subnet-[0-9a-f]+$' "Use the real private subnet ID, not a friendly name."
+          require_match "RDS_SECURITY_GROUP_ID" "$RDS_SECURITY_GROUP_ID" '^sg-[0-9a-f]+$' "Use the RDS security group ID."
           require_match "DATABASE_WRITER_URL" "$DATABASE_WRITER_URL" '^postgres(ql)?://' "Use a PostgreSQL connection string."
           require_match "DATABASE_READER_URL" "$DATABASE_READER_URL" '^postgres(ql)?://' "Use a PostgreSQL connection string."
           require_match "FRONTEND_URL" "$FRONTEND_URL" '^https?://' "Use the deployed frontend origin, for example https://example.com."
@@ -165,6 +182,7 @@ jobs:
               VpcId="${{ secrets.VPC_ID }}" \
               SubnetA="${{ secrets.SUBNET_A }}" \
               SubnetB="${{ secrets.SUBNET_B }}" \
+              DatabaseSecurityGroupId="$RDS_SECURITY_GROUP_ID" \
               DatabaseWriterUrl="${{ secrets.DATABASE_WRITER_URL }}" \
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
@@ -206,6 +224,7 @@ jobs:
               VpcId="${{ secrets.VPC_ID }}" \
               SubnetA="${{ secrets.SUBNET_A }}" \
               SubnetB="${{ secrets.SUBNET_B }}" \
+              DatabaseSecurityGroupId="$RDS_SECURITY_GROUP_ID" \
               DatabaseWriterUrl="${{ secrets.DATABASE_WRITER_URL }}" \
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { db } from "../index";
 import { githubProfiles, user } from "../schema";
+import { ensureGithubSchema } from "./schema";
 
 export type UpsertGithubProfileInput = {
   userId: string;
@@ -16,6 +17,8 @@ export type UpsertGithubProfileInput = {
 export const githubWriter = {
   /** Ensure the public demo flow has a user row for github_profiles.user_id FK. */
   ensureDemoUser: async (userId: string) => {
+    await ensureGithubSchema();
+
     await db
       .insert(user)
       .values({
@@ -31,6 +34,8 @@ export const githubWriter = {
 
   /** upsert：按 userId 插入或更新；事务 + unique violation 处理防止并发 race */
   upsertByUserId: async (input: UpsertGithubProfileInput) => {
+    await ensureGithubSchema();
+
     const now = new Date();
 
     try {
@@ -89,6 +94,8 @@ export const githubWriter = {
 
   /** 按 userId 删除 profile */
   deleteByUserId: async (userId: string) => {
+    await ensureGithubSchema();
+
     await db.delete(githubProfiles).where(eq(githubProfiles.userId, userId));
     return { success: true as const };
   },

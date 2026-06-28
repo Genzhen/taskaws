@@ -1,0 +1,3 @@
+{
+  "extends": "@taskaws/config/tsconfig.base.json"
+}

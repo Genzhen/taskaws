@@ -1,0 +1,24 @@
+{
+  "name": "@taskaws/auth",
+  "type": "module",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./*": {
+      "default": "./src/*.ts"
+    }
+  },
+  "scripts": {},
+  "dependencies": {
+    "@taskaws/db": "workspace:*",
+    "@taskaws/env": "workspace:*",
+    "better-auth": "catalog:",
+    "dotenv": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@taskaws/config": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

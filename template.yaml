@@ -122,24 +122,11 @@ Resources:
           - !GetAtt LambdaSecurityGroup.GroupId
 
       # -----------------------------------------------------------------------
-      # Lambda Function URL — public, no Lambda-level auth (auth handled in-app
-      # via better-auth). CORS locked to the frontend origin.
+      # Lambda Function URL — public, no Lambda-level auth. CORS is handled by
+      # Hono so responses only contain one Access-Control-Allow-Origin header.
       # -----------------------------------------------------------------------
       FunctionUrlConfig:
         AuthType: NONE
-        Cors:
-          AllowOrigins:
-            - !Ref CorsOrigin
-          AllowHeaders:
-            - Content-Type
-            - Authorization
-            - Cookie
-            - trpc-accept
-            - x-trpc-source
-          AllowMethods:
-            - GET
-            - POST
-          AllowCredentials: true
 
 # =============================================================================
 # Outputs — consumed by the GitHub Actions workflow (deploy-lambda job reads

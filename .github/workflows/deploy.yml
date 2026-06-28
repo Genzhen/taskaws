@@ -236,9 +236,15 @@ jobs:
 
       - name: Set Lambda URL env
         run: |
+          if [ -z "${{ needs.deploy-lambda.outputs.lambda_url }}" ]; then
+            echo "::error::deploy-lambda did not produce a Lambda URL"
+            exit 1
+          fi
           echo "VITE_SERVER_URL=${{ needs.deploy-lambda.outputs.lambda_url }}" >> apps/web/.env
 
       - name: Build frontend
+        env:
+          VITE_SERVER_URL: ${{ needs.deploy-lambda.outputs.lambda_url }}
         run: pnpm -F web build
 
       - name: Configure AWS credentials

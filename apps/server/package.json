@@ -4,7 +4,7 @@
   "main": "src/index.ts",
   "scripts": {
     "build": "tsdown",
-    "build:api": "esbuild src/lambda.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/lambda.mjs --external:@aws-sdk/* && cd dist && zip lambda.zip lambda.mjs",
+    "build:api": "esbuild src/lambda.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/lambda.js --external:@aws-sdk/* && cd dist && zip lambda.zip lambda.js",
     "check-types": "tsc -b",
     "compile": "bun build --compile --minify --sourcemap --bytecode ./src/index.ts --outfile server",
     "dev": "tsx watch src/index.ts",

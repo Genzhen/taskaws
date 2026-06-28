@@ -59,6 +59,8 @@ jobs:
           cd apps/web && (pnpm typecheck || pnpm check-types || exit 1)
 
       - name: Build
+        env:
+          VITE_SERVER_URL: http://localhost:3000
         run: pnpm build
 
       - name: Build Lambda bundle

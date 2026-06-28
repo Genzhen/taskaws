@@ -294,6 +294,9 @@ importers:
       '@taskaws/env':
         specifier: workspace:*
         version: link:../env
+      '@trpc/server':
+        specifier: 'catalog:'
+        version: 11.18.0(typescript@6.0.3)
       dotenv:
         specifier: 'catalog:'
         version: 17.4.2

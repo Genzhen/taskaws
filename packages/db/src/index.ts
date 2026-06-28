@@ -7,7 +7,9 @@ import * as schema from "./schema";
 export const dbWrite = drizzle({
   connection: {
     connectionString: env.DATABASE_WRITER_URL,
-    ssl: true,
+    ssl: {
+      rejectUnauthorized: false,
+    },
   },
   schema,
 });
@@ -16,7 +18,9 @@ export const dbWrite = drizzle({
 export const dbRead = drizzle({
   connection: {
     connectionString: env.DATABASE_READER_URL,
-    ssl: true,
+    ssl: {
+      rejectUnauthorized: false,
+    },
   },
   schema,
 });

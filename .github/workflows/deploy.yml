@@ -13,9 +13,6 @@ name: Deploy to AWS
 #   VPC_ID, SUBNET_A, SUBNET_B                      — existing VPC private Lambda subnets
 #   DATABASE_WRITER_URL, DATABASE_READER_URL        — RDS PostgreSQL connection strings
 #   BETTER_AUTH_SECRET                              — auth signing secret (>=32 chars)
-#   FRONTEND_URL                                    — production frontend origin
-#                                                     (used as CORS_ORIGIN and,
-#                                                      temporarily, as BETTER_AUTH_URL)
 #   AWS_S3_BUCKET                                   — frontend static hosting
 #   AWS_CLOUDFRONT_DISTRIBUTION_ID                  — (optional) cache invalidation
 #
@@ -31,6 +28,7 @@ on:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  FRONTEND_ORIGIN: http://${{ secrets.AWS_S3_BUCKET }}.s3-website-${{ secrets.AWS_REGION || 'us-east-1' }}.amazonaws.com
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -115,7 +113,8 @@ jobs:
           DATABASE_WRITER_URL: ${{ secrets.DATABASE_WRITER_URL }}
           DATABASE_READER_URL: ${{ secrets.DATABASE_READER_URL }}
           BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+          FRONTEND_URL: ${{ env.FRONTEND_ORIGIN }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
         run: |
           set -euo pipefail
 
@@ -138,6 +137,11 @@ jobs:
           require_match "DATABASE_READER_URL" "$DATABASE_READER_URL" '^postgres(ql)?://' "Use a PostgreSQL connection string."
           require_match "FRONTEND_URL" "$FRONTEND_URL" '^https?://' "Use the deployed frontend origin, for example https://example.com."
 
+          if [ -z "$AWS_S3_BUCKET" ]; then
+            echo "::error::AWS_S3_BUCKET is required to compute the public frontend origin."
+            exit 1
+          fi
+
           if [[ ${#BETTER_AUTH_SECRET} -lt 32 ]]; then
             echo "::error::BETTER_AUTH_SECRET must be at least 32 characters."
             exit 1
@@ -145,7 +149,7 @@ jobs:
 
       # -------------------------------------------------------------------------
       # First SAM deploy.
-      # BETTER_AUTH_URL is set to FRONTEND_URL as a temporary placeholder —
+      # BETTER_AUTH_URL is set to the S3 website origin as a temporary placeholder —
       # better-auth needs a real URL, but the Lambda URL isn't known until the
       # Function URL is created. We fix it in the second deploy below.
       # -------------------------------------------------------------------------
@@ -164,8 +168,8 @@ jobs:
               DatabaseWriterUrl="${{ secrets.DATABASE_WRITER_URL }}" \
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
-              BetterAuthUrl="${{ secrets.FRONTEND_URL }}" \
-              CorsOrigin="${{ secrets.FRONTEND_URL }}"
+              BetterAuthUrl="${{ env.FRONTEND_ORIGIN }}" \
+              CorsOrigin="${{ env.FRONTEND_ORIGIN }}"
 
       # -------------------------------------------------------------------------
       # Read the Lambda Function URL from the stack outputs.
@@ -206,7 +210,7 @@ jobs:
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
               BetterAuthUrl="${{ steps.get-url.outputs.lambda_url }}" \
-              CorsOrigin="${{ secrets.FRONTEND_URL }}"
+              CorsOrigin="${{ env.FRONTEND_ORIGIN }}"
 
   # ---------------------------------------------------------------------------
   # deploy-frontend — build web with VITE_SERVER_URL → S3 + CloudFront

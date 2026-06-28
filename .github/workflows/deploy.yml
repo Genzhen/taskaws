@@ -109,6 +109,42 @@ jobs:
         with:
           use-installer: true
 
+      - name: Validate deployment secrets
+        env:
+          VPC_ID: ${{ secrets.VPC_ID }}
+          SUBNET_A: ${{ secrets.SUBNET_A }}
+          SUBNET_B: ${{ secrets.SUBNET_B }}
+          DATABASE_WRITER_URL: ${{ secrets.DATABASE_WRITER_URL }}
+          DATABASE_READER_URL: ${{ secrets.DATABASE_READER_URL }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+        run: |
+          set -euo pipefail
+
+          require_match() {
+            local name="$1"
+            local value="$2"
+            local pattern="$3"
+            local hint="$4"
+
+            if [[ ! "$value" =~ $pattern ]]; then
+              echo "::error::$name is invalid. $hint"
+              exit 1
+            fi
+          }
+
+          require_match "VPC_ID" "$VPC_ID" '^vpc-[0-9a-f]+$' "Use the real AWS VPC ID, for example vpc-0123456789abcdef0."
+          require_match "SUBNET_A" "$SUBNET_A" '^subnet-[0-9a-f]+$' "Use the real private subnet ID, not a friendly name."
+          require_match "SUBNET_B" "$SUBNET_B" '^subnet-[0-9a-f]+$' "Use the real private subnet ID, not a friendly name."
+          require_match "DATABASE_WRITER_URL" "$DATABASE_WRITER_URL" '^postgres(ql)?://' "Use a PostgreSQL connection string."
+          require_match "DATABASE_READER_URL" "$DATABASE_READER_URL" '^postgres(ql)?://' "Use a PostgreSQL connection string."
+          require_match "FRONTEND_URL" "$FRONTEND_URL" '^https?://' "Use the deployed frontend origin, for example https://example.com."
+
+          if [[ ${#BETTER_AUTH_SECRET} -lt 32 ]]; then
+            echo "::error::BETTER_AUTH_SECRET must be at least 32 characters."
+            exit 1
+          fi
+
       # -------------------------------------------------------------------------
       # First SAM deploy.
       # BETTER_AUTH_URL is set to FRONTEND_URL as a temporary placeholder —

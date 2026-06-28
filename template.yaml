@@ -116,9 +116,12 @@ Resources:
             - Content-Type
             - Authorization
             - Cookie
+            - trpc-accept
+            - x-trpc-source
           AllowMethods:
             - GET
             - POST
+            - OPTIONS
           AllowCredentials: true
 
 # =============================================================================

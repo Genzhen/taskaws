@@ -16,7 +16,12 @@ export function createApp() {
     cors({
       origin: env.CORS_ORIGIN,
       allowMethods: ["GET", "POST", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "trpc-accept",
+        "x-trpc-source",
+      ],
       credentials: true,
     }),
   );

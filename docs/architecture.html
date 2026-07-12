@@ -33,6 +33,7 @@
   .new{outline:2px dotted var(--target)}
   .new::after{content:"新增";position:absolute;top:-8px;right:-6px;background:var(--target);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px}
   .diff::after{content:"不同";position:absolute;top:-8px;right:-6px;background:var(--orange);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px}
+  .impl::after{content:"已实现";position:absolute;top:-8px;right:-6px;background:var(--green);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px}
   .pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;background:#dfe6e9;color:var(--gray);margin-top:2px}
   .arrow{display:flex;align-items:center;justify-content:center;padding:0 5px;color:var(--gray);font-size:17px;min-width:24px}
   .arrow.label{font-size:10px;flex-direction:column;gap:1px;color:var(--gray)}
@@ -75,8 +76,8 @@
   <tr><td class="k">ALB</td><td><b>Internet-facing</b>（公网）</td><td><b>Internal</b> + API GW <b>VPC Link</b>（私有，只经 API GW）</td><td>需改 internal + VPC Link</td></tr>
   <tr><td class="k">CloudMap 路径</td><td>现有 <code>taskaws-api</code> Lambda 的 <code>intro.proxy</code>（复用）</td><td>独立 <b>Node Lambda（校验转发）</b> ← API GW</td><td>复用 vs 独立转发 Lambda</td></tr>
   <tr><td class="k">DB 凭证</td><td><b>明文 env</b> <code>DATABASE_READER_URL</code></td><td><b>Secrets Manager</b>（Task Role GetSecretValue）</td><td>安全加固待补</td></tr>
-  <tr><td class="k">每-PR 入口</td><td>每 PR <b>独立 ALB</b>（成本高）</td><td><b>共享 ALB + Listener Rule</b>（每 PR 一条规则）</td><td>降本优化</td></tr>
-  <tr><td class="k">CI 鉴权</td><td>CodeBuild webhook（自有 role）</td><td><b>GitHub Actions + OIDC</b>（GitHubOIDCRole）</td><td>更规范的触发/鉴权</td></tr>
+  <tr><td class="k">每-PR 入口</td><td><b>pr-template.yaml 已改共享 ALB</b>：每 PR 建 TargetGroup + host-header ListenerRule（<code>pr-N.preview.taskaws.local</code>），不再自建 ALB</td><td><b>共享 ALB + Listener Rule</b>（每 PR 一条规则）</td><td>✅ 已对齐（共享ALB+Rule / GHA+OIDC）</td></tr>
+  <tr><td class="k">CI 鉴权</td><td>CodeBuild webhook（自有 role，保留为替代方案）+ <b>新增 GHA+OIDC</b>（<code>gh-oidc-role.yaml</code> + <code>.github/workflows/pr-preview.yml</code>）</td><td><b>GitHub Actions + OIDC</b>（GitHubOIDCRole）</td><td>✅ 已对齐（共享ALB+Rule / GHA+OIDC）</td></tr>
 </table>
 
 <!-- ================================================================ -->
@@ -244,11 +245,11 @@
       <div class="row">
         <div class="node"><span class="ic">🐙</span><b>GitHub Repo</b></div>
         <div class="arrow">→</div>
-        <div class="node diff"><span class="ic">⚡</span><b>GitHub Actions</b></div>
+        <div class="node impl"><span class="ic">⚡</span><b>GitHub Actions</b></div>
         <div class="arrow">→</div>
-        <div class="node new"><span class="ic">🪪</span><b>OIDC</b></div>
+        <div class="node impl"><span class="ic">🪪</span><b>OIDC</b></div>
         <div class="arrow">→</div>
-        <div class="node new"><span class="ic">🗳️</span><b>IAM Role</b><span class="meta">GitHubOIDCRole</span></div>
+        <div class="node impl"><span class="ic">🗳️</span><b>IAM Role</b><span class="meta">GitHubOIDCRole</span></div>
       </div>
       <div class="row" style="margin-top:6px">
         <div class="arrow">↓</div>
@@ -256,17 +257,17 @@
         <div class="arrow">→</div>
         <div class="node purple"><span class="ic">📦</span><b>ECR</b><span class="meta">go-api-pr-18</span></div>
       </div>
-      <div class="note">🔑 与已建区别：触发/鉴权用 <b>GHA + OIDC</b>（已建是 CodeBuild webhook）。</div>
+      <div class="note">✅ 已实现（<code>gh-oidc-role.yaml</code> + <code>.github/workflows/pr-preview.yml</code>）：触发/鉴权走 <b>GHA + OIDC</b>，CodeBuild webhook 降级为替代方案。</div>
     </div>
     <div class="grp" style="background:#fff"><h4>② PR 资源（共享 ALB + Rule）</h4>
       <div class="stack">
-        <div class="node purple diff"><span class="ic">🧱</span><b>共享 ALB + ALB Rule</b><span class="meta">每 PR 一条转发规则</span></div>
+        <div class="node purple impl"><span class="ic">🧱</span><b>共享 ALB + ALB Rule</b><span class="meta">每 PR 一条转发规则</span></div>
         <div class="node orange"><b>Task Definition</b></div>
         <div class="node orange"><b>ECS Service</b></div>
         <div class="node"><b>Target Group</b></div>
         <div class="node green"><span class="ic">🗺️</span><b>Cloud Map</b></div>
       </div>
-      <div class="note">🔑 与已建区别：每 PR <b>复用共享 ALB + listener rule</b>（已建是每 PR 独立 ALB → 更省）。</div>
+      <div class="note">✅ 已实现（<code>pr-template.yaml</code>）：每 PR <b>复用共享 ALB + listener rule</b>，不再自建独立 ALB。</div>
     </div>
   </div>
   <div class="two-col" style="margin-top:8px">
@@ -277,6 +278,7 @@
       <div class="stack" style="font-size:11px">Close PR → 删 Task Def / Service / TG / ALB Rule / CloudMap<br>共享 ALB、VPC、ECR 保留</div>
     </div>
   </div>
+  <div class="note">✅ <b>共享 ALB + ListenerRule</b>（<code>pr-template.yaml</code>）与 <b>GitHub Actions + OIDC</b>（<code>gh-oidc-role.yaml</code> + <code>.github/workflows/pr-preview.yml</code>）已在代码中实现，按需部署即生效，未部署前 0 运行费用。</div>
 </div>
 
 <!-- ============ Legend ============ -->

@@ -1,0 +1,365 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  TaskAWS Go — Phase 3 pre-created IAM roles for per-PR preview stacks.
+  Deployed ONCE (CAPABILITY_NAMED_IAM) so every ephemeral per-PR stack can
+  reuse these roles instead of calling iam:CreateRole. Outputs the three
+  role ARNs that CodeBuild passes into each per-PR CloudFormation deploy.
+
+# =============================================================================
+# Parameters
+#   These let us scope permissions to real resources instead of `*`.
+#   Defaults reflect the discovered prod environment (account 977778967406,
+#   us-east-1). CloudMapNamespaceId has no default — fill it from the prod
+#   stack's `CloudMapNamespaceId` output once Phase 2 is deployed.
+# =============================================================================
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC the per-PR resources live in (ec2 SG perms are scoped to it).
+    Default: vpc-0100e9f3e19120c53
+  CloudMapNamespaceId:
+    Type: String
+    Description: |
+      Id of the shared CloudMap private DNS namespace (created by the prod
+      stack `taskaws-go`). Read it from that stack's CloudMapNamespaceId
+      output, e.g. aws cloudformation describe-stacks --stack-name taskaws-go
+      --query "Stacks[0].Outputs[?OutputKey=='CloudMapNamespaceId'].OutputValue" --output text
+    Default: ''
+  EcrRepositoryName:
+    Type: String
+    Description: Name of the shared ECR repo CodeBuild pushes PR images to.
+    Default: taskaws-go
+
+Conditions:
+  # When the namespace Id is supplied, scope servicediscovery:CreateService to it.
+  HasNamespaceId: !Not [!Equals [!Ref CloudMapNamespaceId, '']]
+
+# =============================================================================
+# Resources — three roles, each with a fixed RoleName so per-PR stacks can
+# reference them by ARN without creating their own.
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Role 1 — CodeBuild service role.
+  # Used by the `taskaws-go-pr` CodeBuild project. Lets it build+push the
+  # image, read SSM params, deploy/tear-down the per-PR CloudFormation stack,
+  # and (only) pass Role2/Role3 into that stack. Deliberately NO broad ecs/ec2
+  # perms — CloudFormation does the resource work, not CodeBuild.
+  # ---------------------------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: taskaws-go-pr-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        # CloudWatch Logs for the build itself.
+        - PolicyName: CodeBuildLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codebuild/taskaws-go-pr-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codebuild/taskaws-go-pr-*:*'
+
+        # ECR: auth + pull/push on the shared taskaws-go repo.
+        # GetAuthorizationToken is global (resource *); the rest is repo-scoped.
+        # NOTE: docker push needs InitiateLayerUpload/UploadLayerPart/
+        # CompleteLayerUpload in addition to PutImage, so they are included.
+        - PolicyName: EcrPushPull
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepositoryName}'
+
+        # CloudFormation: manage only per-PR stacks (taskaws-go-pr-<n>).
+        - PolicyName: CloudFormationPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/taskaws-go-pr-*/*'
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/taskaws-go-pr-*/*'
+
+        # SSM: read the per-PR preview params (DB reader URL, CORS, CF token, GH token).
+        - PolicyName: SsmReadPrParams
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/taskaws-go/pr/*'
+
+        # iam:PassRole — ONLY Role2 (CloudFormation) and Role3 (ECS task).
+        # Scoped to the two ARNs below. The sts:RoleSessionName condition is
+        # applied with IfExists so it does not break PassRole requests (which
+        # do not carry that key) while still tagging the assumption path.
+        - PolicyName: PassPrRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Condition:
+                  StringLikeIfExists:
+                    'sts:RoleSessionName': 'codebuild-*'
+                Resource:
+                  - !GetAtt CloudFormationRole.Arn
+                  - !GetAtt TaskRole.Arn
+
+  # ---------------------------------------------------------------------------
+  # Role 2 — CloudFormation service role.
+  # Passed as --role-arn to `aws cloudformation deploy` for each per-PR stack.
+  # It performs the actual create/update/delete of ECS/ALB/SG/CloudMap/logs
+  # resources. CRITICAL: it has NO iam:CreateRole and NO iam:PassRole — the
+  # roles are pre-created (Role1/Role2/Role3), so CloudFormation never needs
+  # to create or pass roles.
+  # ---------------------------------------------------------------------------
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: taskaws-go-pr-cfn-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        # ECS: full manage on per-PR task defs + services (named taskaws-go-pr-*).
+        # List/describe actions are global because they operate at cluster level.
+        - PolicyName: EcsPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecs:*
+                Resource:
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/taskaws-go-pr-*'
+                  - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/*/taskaws-go-pr-*'
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeClusters
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeTasks
+                  - ecs:ListServices
+                  - ecs:ListTasks
+                  - ecs:ListTaskDefinitions
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DeregisterTaskDefinition
+                Resource: '*'
+
+        # ALB/TG/listener manage on per-PR resources. Create* is on `*` because
+        # the resource does not exist yet; everything else is name-scoped.
+        - PolicyName: AlbPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: elasticloadbalancing:*
+                Resource:
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/taskaws-go-pr-*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/taskaws-go-pr-*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/taskaws-go-pr-*/*'
+                  - !Sub 'arn:aws:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener-rule/app/taskaws-go-pr-*/*'
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:CreateLoadBalancer
+                  - elasticloadbalancing:CreateTargetGroup
+                  - elasticloadbalancing:CreateListener
+                  - elasticloadbalancing:CreateRule
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeRules
+                  - elasticloadbalancing:DescribeTags
+                  - elasticloadbalancing:ModifyLoadBalancerAttributes
+                Resource: '*'
+
+        # EC2: create/authorise/delete security groups in the shared VPC, plus
+        # tag them. Scoped to the VPC via the ec2:Vpc condition.
+        - PolicyName: Ec2SgInVpc
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:DeleteSecurityGroup
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*'
+                Condition:
+                  StringEquals:
+                    'ec2:Vpc': !Ref VpcId
+              # CreateSecurityGroup evaluates the condition against the VPC being
+              # targeted; CreateTags runs on the freshly-created SG.
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*'
+                Condition:
+                  StringEquals:
+                    'ec2:CreateAction': CreateSecurityGroup
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+
+        # CloudMap: create per-PR services in the shared namespace, and
+        # delete/get/list them. Service Ids are dynamic, so service-level ops
+        # are scoped to the account's services.
+        - PolicyName: CloudMapPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: servicediscovery:CreateService
+                Resource:
+                  - !If [HasNamespaceId, !Sub 'arn:aws:servicediscovery:${AWS::Region}:${AWS::AccountId}:ns/${CloudMapNamespaceId}', '*']
+              - Effect: Allow
+                Action:
+                  - servicediscovery:DeleteService
+                  - servicediscovery:GetService
+                  - servicediscovery:ListInstances
+                  - servicediscovery:ListServices
+                  - servicediscovery:DeregisterInstance
+                  - servicediscovery:RegisterInstance
+                Resource:
+                  - !Sub 'arn:aws:servicediscovery:${AWS::Region}:${AWS::AccountId}:service/*'
+              - Effect: Allow
+                Action:
+                  - servicediscovery:GetNamespace
+                  - servicediscovery:ListNamespaces
+                Resource: '*'
+
+        # CloudWatch Logs: per-PR ECS log groups.
+        - PolicyName: LogsPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DeleteLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/taskaws-go-pr-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/taskaws-go-pr-*:*'
+
+  # ---------------------------------------------------------------------------
+  # Role 3 — ECS task role.
+  # Single role reused as BOTH ExecutionRoleArn and TaskRoleArn by every
+  # per-PR task definition (TaskRoleArn param of the per-PR stack). Execution
+  # policy (AWS-managed) covers ECR auth + logs; the inline statements add
+  # repo-scoped image pull and per-PR log writing.
+  # ---------------------------------------------------------------------------
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: taskaws-go-pr-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        # ECR read (pull image) on the shared repo. GetAuthorizationToken is
+        # already granted by the managed execution policy; this scopes the
+        # image pulls to taskaws-go.
+        - PolicyName: EcrRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepositoryName}'
+        # Write task logs to the per-PR log group.
+        - PolicyName: LogsWrite
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/taskaws-go-pr-*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/taskaws-go-pr-*:*'
+
+# =============================================================================
+# Outputs — consumed by CodeBuild (buildspec-pr.yml) at deploy time.
+# =============================================================================
+Outputs:
+  Role1Arn:
+    Description: CodeBuild service role ARN (taskaws-go-pr-codebuild-role)
+    Value: !GetAtt CodeBuildRole.Arn
+    Export:
+      Name: taskaws-go-pr-roles-CodeBuildRoleArn
+  Role2Arn:
+    Description: CloudFormation service role ARN (taskaws-go-pr-cfn-role), passed as --role-arn to per-PR deploys
+    Value: !GetAtt CloudFormationRole.Arn
+    Export:
+      Name: taskaws-go-pr-roles-CfnRoleArn
+  Role3Arn:
+    Description: ECS task role ARN (taskaws-go-pr-task-role), used as both Execution + Task role in per-PR task defs
+    Value: !GetAtt TaskRole.Arn
+    Export:
+      Name: taskaws-go-pr-roles-TaskRoleArn

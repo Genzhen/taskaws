@@ -1,0 +1,38 @@
+{
+  "name": "taskaws-go-pr",
+  "description": "TaskAWS Go PR preview. Webhook/connection created separately (Console OAuth or create-webhook). SSM /taskaws-go/pr/*: database-reader-url, cors-origin, cloudflare/api-token, gh-token. Webhook envs: CODEBUILD_SOURCE_VERSION, CODEBUILD_WEBHOOK_EVENT.",
+  "source": {
+    "type": "GITHUB",
+    "location": "https://github.com/REPLACE_OWNER/REPLACE_REPO.git",
+    "gitCloneDepth": 1,
+    "reportBuildStatus": true,
+    "buildspec": "buildspec-pr.yml",
+    "insecureSsl": false
+  },
+  "sourceVersion": "main",
+  "artifacts": {
+    "type": "NO_ARTIFACTS"
+  },
+  "environment": {
+    "type": "LINUX_CONTAINER",
+    "image": "aws/codebuild/standard:7.0",
+    "computeType": "BUILD_GENERAL1_SMALL",
+    "privilegedMode": true,
+    "imagePullCredentialsType": "CODEBUILD"
+  },
+  "serviceRole": "arn:aws:iam::977778967406:role/taskaws-go-pr-codebuild-role",
+  "timeoutInMinutes": 30,
+  "queuedTimeoutInMinutes": 5,
+  "cache": {
+    "type": "LOCAL",
+    "modes": [
+      "LOCAL_DOCKER_LAYER_CACHE"
+    ]
+  },
+  "concurrentBuildLimit": 1,
+  "tags": [
+    { "key": "Project", "value": "taskaws-go" },
+    { "key": "Phase", "value": "3-pr-preview" },
+    { "key": "ManagedBy", "value": "codebuild-json" }
+  ]
+}

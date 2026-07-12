@@ -1,0 +1,288 @@
+# =============================================================================
+# CodeBuild buildspec for TaskAWS Go per-PR preview environments.
+#
+# Flow:
+#   PR opened/synchronized -> build image, deploy a per-PR CloudFormation stack
+#   (ALB + ECS service + CloudMap service), expose it via a Cloudflare quick
+#   tunnel, build the SPA pointing at it, deploy the SPA to Cloudflare Pages,
+#   and post the two preview URLs back to the PR.
+#   PR closed              -> tear down the per-PR stack + Pages project.
+#
+# SSM params this build reads (must exist before first build):
+#   /taskaws-go/pr/database-reader-url   SecureString  RDS reader connection string
+#   /taskaws-go/pr/cors-origin           String        Allowed CORS origin for the preview
+#   /taskaws-go/pr/cloudflare/api-token  SecureString  Cloudflare API token (wrangler + tunnel)
+#   /taskaws-go/pr/gh-token              SecureString  GitHub PAT for posting PR comments
+#
+# Webhook env vars CodeBuild injects (consumed below):
+#   CODEBUILD_SOURCE_VERSION     e.g. refs/pull/<N>/merge or refs/pull/<N>/head
+#   CODEBUILD_WEBHOOK_EVENT      e.g. PULL_REQUEST_CREATED | PULL_REQUEST_UPDATED | PULL_REQUEST_CLOSED
+#   CODEBUILD_SOURCE_REPO_URL    https://github.com/<owner>/<repo> (used for the comment fallback)
+#
+# NOTE on robustness: phases run with `set -Eeuo pipefail`, but steps that may
+# legitimately fail (tunnel URL capture, Pages deploy, comment post) are guarded
+# so the build always reaches the PR-comment step and reports whatever URLs it got.
+# =============================================================================
+version: 0.2
+
+env:
+  shell: bash
+  # Static config — overridable via the CodeBuild project's env vars if needed.
+  variables:
+    AWS_REGION: us-east-1
+    PROD_STACK: taskaws-go
+    PR_ROLES_STACK: taskaws-go-pr-roles
+    ECR_REPO: 977778967406.dkr.ecr.us-east-1.amazonaws.com/taskaws-go
+    # Go toolchain version — standard:7.0 has no Go, so we install it from tarball.
+    # Bump to the latest 1.22.x patch when refreshing.
+    GO_VERSION: '1.22.10'
+  # CodeBuild exports these for downstream consumers (BatchGetBuilds).
+  exported-variables:
+    - PREVIEW_BACKEND_URL
+    - PREVIEW_FRONTEND_URL
+
+phases:
+
+  # ---------------------------------------------------------------------------
+  # install — toolchains the standard:7.0 image lacks: Go 1.22, pnpm, wrangler,
+  # cloudflared. privilegedMode is on so Docker works for the image build.
+  # ---------------------------------------------------------------------------
+  install:
+    runtime-versions:
+      nodejs: '20'
+    commands:
+      - set -Eeuo pipefail
+      # Go (not shipped on standard:7.0).
+      - |
+        curl -sSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+        tar -C /usr/local -xzf /tmp/go.tgz
+        rm -f /tmp/go.tgz
+      - export PATH="/usr/local/go/bin:${PATH}"
+      - go version
+      # pnpm (match the version pinned in the repo's packageManager field).
+      - npm install -g corepack@latest
+      - corepack enable
+      - corepack prepare pnpm@11.6.0 --activate
+      - pnpm -v
+      # Cloudflare tooling.
+      - npm install -g wrangler
+      - |
+        curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o /usr/local/bin/cloudflared
+        chmod +x /usr/local/bin/cloudflared
+      - cloudflared --version
+      # Docker sanity check (needed for the image build/push).
+      - docker info
+
+  # ---------------------------------------------------------------------------
+  # pre_build — resolve PR number, secrets, shared infra IDs, and the image tag.
+  # ---------------------------------------------------------------------------
+  pre_build:
+    commands:
+      - set -Eeuo pipefail
+      # --- Derive PR_NUMBER from whichever webhook env var carries the PR ref.
+      #    CODEBUILD_SOURCE_VERSION is typically refs/pull/<N>/merge or /head.
+      - |
+        PR_REF="${CODEBUILD_SOURCE_VERSION:-}"
+        # Fallbacks: some webhook configs populate the prev-triggered ref or the head ref.
+        if [ -z "${PR_REF:-}" ] || ! echo "$PR_REF" | grep -qE '^refs/pull/[0-9]+/(merge|head)$'; then
+          PR_REF="${CODEBUILD_WEBHOOK_PREV_TRIGGERED:-${PR_REF}}"
+        fi
+        if [ -z "${PR_REF:-}" ] || ! echo "$PR_REF" | grep -qE '^refs/pull/[0-9]+/(merge|head)$'; then
+          PR_REF="${CODEBUILD_WEBHOOK_HEAD_REF:-${PR_REF}}"
+        fi
+        PR_NUMBER="$(printf '%s\n' "$PR_REF" | grep -Eo '[0-9]+' | head -n1 || true)"
+        if [ -z "${PR_NUMBER:-}" ]; then
+          echo "ERROR: could not determine PR number from CODEBUILD_SOURCE_VERSION='${CODEBUILD_SOURCE_VERSION:-}'" >&2
+          exit 1
+        fi
+        echo "Resolved PR_NUMBER=$PR_NUMBER"
+        export PR_NUMBER
+      # --- Secrets from SSM (no secrets-manager block; read via AWS CLI).
+      - export DATABASE_READER_URL="$(aws ssm get-parameter --name /taskaws-go/pr/database-reader-url --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text)"
+      - export CORS_ORIGIN="$(aws ssm get-parameter --name /taskaws-go/pr/cors-origin --region "$AWS_REGION" --query 'Parameter.Value' --output text)"
+      - export CF_TOKEN="$(aws ssm get-parameter --name /taskaws-go/pr/cloudflare/api-token --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text)"
+      - export GH_TOKEN="$(aws ssm get-parameter --name /taskaws-go/pr/gh-token --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text)"
+      # --- Authenticate Docker to ECR (push the PR image to the shared repo).
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO"
+      # --- Read shared resource IDs from the prod stack + role ARNs from pr-roles.
+      - export CLUSTER="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='EcsClusterName'].OutputValue" --output text)"
+      - export NS_ID="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='CloudMapNamespaceId'].OutputValue" --output text)"
+      - export PUBA="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetA'].OutputValue" --output text)"
+      - export PUBB="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetB'].OutputValue" --output text)"
+      - export ROLE2="$(aws cloudformation describe-stacks --stack-name "$PR_ROLES_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='Role2Arn'].OutputValue" --output text)"
+      - export ROLE3="$(aws cloudformation describe-stacks --stack-name "$PR_ROLES_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='Role3Arn'].OutputValue" --output text)"
+      - export IMAGE="$ECR_REPO:pr-$PR_NUMBER"
+      - echo "Built image will be $IMAGE"
+
+  # ---------------------------------------------------------------------------
+  # build — build+push on open/update; skip entirely on close (teardown only).
+  # ---------------------------------------------------------------------------
+  build:
+    commands:
+      - set -Eeuo pipefail
+      - export PR_NUMBER="${PR_NUMBER:-$(printf '%s\n' "${CODEBUILD_SOURCE_VERSION:-}" | grep -Eo '[0-9]+' | head -n1)}"
+      - |
+        # Detect PR close. CODEBUILD_WEBHOOK_EVENT = PULL_REQUEST_CLOSED (or any
+        # value containing CLOSED) means we tear down instead of building.
+        # CAVEAT: the exact closed-event env var/value should be confirmed
+        # against the live webhook payload for this source provider.
+        EVENT="${CODEBUILD_WEBHOOK_EVENT:-}"
+        IS_CLOSED=0
+        if [ -n "$EVENT" ] && echo "$EVENT" | grep -qi 'CLOSED'; then
+          IS_CLOSED=1
+        fi
+        export IS_CLOSED
+      - |
+        if [ "$IS_CLOSED" = "1" ]; then
+          echo "PR closed event — skipping image build (teardown runs in post_build)."
+        else
+          # Build context is apps/intro-go: the Dockerfile expects go.mod / cmd/
+          # at the context root (COPY go.mod go.sum, ./cmd/intro).
+          docker build -f apps/intro-go/Dockerfile -t "$IMAGE" apps/intro-go
+          docker push "$IMAGE"
+        fi
+
+  # ---------------------------------------------------------------------------
+  # post_build — deploy per-PR stack + tunnel + SPA, OR tear down on close.
+  # Every fragile step is guarded so we still post a PR comment at the end.
+  # ---------------------------------------------------------------------------
+  post_build:
+    commands:
+      - set -Eeuo pipefail
+      - export PR_NUMBER="${PR_NUMBER:-$(printf '%s\n' "${CODEBUILD_SOURCE_VERSION:-}" | grep -Eo '[0-9]+' | head -n1)}"
+      - export AWS_DEFAULT_REGION="$AWS_REGION"
+      - export CLOUDFLARE_API_TOKEN="$CF_TOKEN"
+      # ---------------------------------------------------------------------
+      # BRANCH A — PR closed: best-effort teardown, then exit clean.
+      # ---------------------------------------------------------------------
+      - |
+        EVENT="${CODEBUILD_WEBHOOK_EVENT:-}"
+        if [ -n "$EVENT" ] && echo "$EVENT" | grep -qi 'CLOSED'; then
+          echo "Tearing down preview for PR $PR_NUMBER"
+          set +e
+          aws cloudformation delete-stack --stack-name "taskaws-go-pr-$PR_NUMBER" --region "$AWS_REGION"
+          # Best-effort Cloudflare Pages project removal (may fail if not found).
+          if command -v wrangler >/dev/null 2>&1; then
+            CLOUDFLARE_API_TOKEN="$CF_TOKEN" wrangler pages project delete "taskaws-go-pr-$PR_NUMBER" --yes || echo "warn: pages project delete failed (may not exist)"
+          fi
+          set -e
+          echo "Preview torn down for PR $PR_NUMBER"
+          export PREVIEW_BACKEND_URL=""
+          export PREVIEW_FRONTEND_URL=""
+          exit 0
+        fi
+      # ---------------------------------------------------------------------
+      # BRANCH B — PR open/update: deploy stack, tunnel, build SPA, comment.
+      # ---------------------------------------------------------------------
+      - export BACKEND_URL=""
+      - export FRONTEND_URL=""
+      # Deploy (or update) the per-PR stack using the pre-created CFN role.
+      - |
+        set +e
+        aws cloudformation deploy \
+          --stack-name "taskaws-go-pr-$PR_NUMBER" \
+          --template-file infra/go/pr-template.yaml \
+          --role-arn "$ROLE2" \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --no-fail-on-empty-changeset \
+          --parameter-overrides \
+            PrId="$PR_NUMBER" \
+            TaskRoleArn="$ROLE3" \
+            ImageUrl="$IMAGE" \
+            DatabaseReaderUrl="$DATABASE_READER_URL" \
+            CorsOrigin="$CORS_ORIGIN" \
+            EcsCluster="$CLUSTER" \
+            CloudMapNamespaceId="$NS_ID" \
+            PublicSubnetA="$PUBA" \
+            PublicSubnetB="$PUBB"
+        DEPLOY_RC=$?
+        set -e
+        if [ "$DEPLOY_RC" -ne 0 ]; then
+          echo "warn: cloudformation deploy failed (rc=$DEPLOY_RC); will still post a comment"
+        fi
+      # Read back the ALB DNS from the deployed stack (empty if deploy failed).
+      - export ALB_DNS="$(aws cloudformation describe-stacks --stack-name "taskaws-go-pr-$PR_NUMBER" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='AlbDnsUrl'].OutputValue" --output text 2>/dev/null || true)"
+      - echo "ALB_DNS=$ALB_DNS"
+      # --- Cloudflare quick tunnel → public https URL for the ALB.
+      #    CAVEAT: the trycloudflare.com URL is only valid while cloudflared is
+      #    running; it dies when the build container is torn down. Use a named
+      #    tunnel + DNS record for a persistent preview.
+      - |
+        set +e
+        if [ -n "$ALB_DNS" ]; then
+          ALB_HOST="${ALB_DNS#http://}"
+          ALB_HOST="${ALB_HOST#https://}"
+          nohup cloudflared tunnel --no-autoupdate --url "http://$ALB_HOST" >/tmp/cf.log 2>&1 &
+          CF_PID=$!
+          # Poll up to 60s for the trycloudflare.com URL in the tunnel log.
+          for _ in $(seq 1 60); do
+            sleep 1
+            BACKEND_URL="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -n1 || true)"
+            [ -n "$BACKEND_URL" ] && break
+          done
+          if [ -z "$BACKEND_URL" ]; then
+            echo "warn: did not capture cloudflare tunnel URL within 60s"
+          fi
+        else
+          echo "warn: no ALB DNS — skipping tunnel"
+        fi
+        set -e
+        export BACKEND_URL
+      # --- Build the SPA pointing at the tunnelled backend, deploy to Pages.
+      - |
+        set +e
+        if [ -n "$BACKEND_URL" ]; then
+          cd apps/web
+          # VITE_SERVER_URL: main backend (use prod/placeholder for preview).
+          # VITE_INTRO_SERVICE_URL: the per-PR Go intro service via tunnel.
+          VITE_SERVER_URL="${VITE_SERVER_URL:-https://example.invalid}" \
+          VITE_INTRO_SERVICE_URL="$BACKEND_URL" \
+          pnpm install --frozen-lockfile
+          pnpm build
+          # React Router 7 (ssr:false) emits static assets to build/client.
+          if [ -d build/client ]; then
+            FRONTEND_URL="$(CLOUDFLARE_API_TOKEN="$CF_TOKEN" wrangler pages deploy build/client \
+              --project-name="taskaws-go-pr-$PR_NUMBER" --commit-dirty=true 2>/dev/null \
+              | grep -Eo 'https://[a-z0-9.-]+\.pages\.dev' | head -n1 || true)"
+          else
+            echo "warn: apps/web/build/client not found — SPA build did not emit output"
+          fi
+          if [ -z "$FRONTEND_URL" ]; then
+            echo "warn: did not capture Cloudflare Pages URL"
+          fi
+          cd "$CODEBUILD_SRC_DIR"
+        else
+          echo "warn: no backend URL — skipping SPA build + Pages deploy"
+        fi
+        set -e
+        export FRONTEND_URL
+      # --- Publish captured URLs for downstream consumers.
+      - export PREVIEW_BACKEND_URL="$BACKEND_URL"
+      - export PREVIEW_FRONTEND_URL="$FRONTEND_URL"
+      # --- Post the PR comment (best-effort): gh first, curl fallback.
+      - |
+        set +e
+        OWNER_REPO="$(printf '%s\n' "${CODEBUILD_SOURCE_REPO_URL:-}" | sed -E 's#.*github\.com/([^/]+/[^/]+)(\.git)?#\1#' | sed -E 's/\.git$//')"
+        BODY="$(printf 'Preview backend: %s\nPreview frontend: %s' "${BACKEND_URL:-<pending>}" "${FRONTEND_URL:-<pending>}")"
+        if [ -n "$PR_NUMBER" ]; then
+          if command -v gh >/dev/null 2>&1 && [ -n "$GH_TOKEN" ]; then
+            if [ -n "$OWNER_REPO" ]; then
+              GH_TOKEN="$GH_TOKEN" gh pr comment "$PR_NUMBER" --repo "$OWNER_REPO" --body "$BODY" \
+                || GH_TOKEN="$GH_TOKEN" gh pr comment "$PR_NUMBER" --body "$BODY"
+            else
+              GH_TOKEN="$GH_TOKEN" gh pr comment "$PR_NUMBER" --body "$BODY"
+            fi
+          elif [ -n "$GH_TOKEN" ] && [ -n "$OWNER_REPO" ]; then
+            # Fallback: raw GitHub REST API.
+            curl -fsSL -X POST "https://api.github.com/repos/$OWNER_REPO/issues/$PR_NUMBER/comments" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{\"body\": \"$(printf '%s\\n' "$BODY" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | paste -sd'\\n' -)\"}" \
+              || echo "warn: curl PR comment failed"
+          else
+            echo "warn: cannot post PR comment (gh/gh-token/repo missing)"
+          fi
+        fi
+        set -e
+      - echo "Preview backend: ${BACKEND_URL:-<none>}"
+      - echo "Preview frontend: ${FRONTEND_URL:-<none>}"

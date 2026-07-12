@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  TaskAWS Go — GitHub Actions OIDC role for per-PR preview environments.
+  Deployed ONCE (CAPABILITY_NAMED_IAM). GitHub Actions assumes this role via
+  OIDC (no long-lived keys) to build+push the PR image, deploy the per-PR
+  CloudFormation stack, and post the preview URLs back to the PR.
+
+# =============================================================================
+# ONE-TIME PREREQUISITE — create the GitHub OIDC identity provider in IAM.
+# This stack ASSUMES the provider already exists; it does not create it
+# (creating the provider is an account-level, once-ever operation that this
+# repo deliberately keeps out of CloudFormation so it is never accidentally
+# deleted on stack teardown).
+#
+# Run once (any admin principal with iam:CreateOpenIDConnectProvider):
+#
+#   aws iam create-open-id-connect-provider \
+#     --url https://token.actions.githubusercontent.com \
+#     --client-id-list sts.amazonaws.com \
+#     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
+#
+# WHY this thumbprint: AWS now maintains the actions GitHub OIDC thumbprint
+# automatically, so the value in --thumbprint-list is only a placeholder to
+# satisfy the CLI's required argument — AWS overrides it with the current
+# upstream certificate thumbprint. Verify the provider exists afterwards:
+#
+#   aws iam list-open-id-connect-providers \
+#     --query "OpenIDConnectProviderList[?contains(Arn,'token.actions.githubusercontent.com')]"
+#
+# AFTER deploying this stack: store the OidcRoleArn output as a GitHub Actions
+# repository VARIABLE (Settings → Secrets and variables → Actions → Variables,
+# NOT a secret — the workflow reads it via vars.TASKAWS_GO_OIDC_ROLE_ARN):
+#
+#   TASKAWS_GO_OIDC_ROLE_ARN=<OidcRoleArn output>
+#
+# =============================================================================
+
+Parameters:
+  GithubRepo:
+    Type: String
+    Description: |
+      GitHub repository in owner/name form whose pull_request workflows may
+      assume this role (e.g. Genzhen/taskaws). Used in the OIDC sub condition
+      so only PR runs from this repo can assume the role.
+    Default: Genzhen/taskaws
+  CfnRoleName:
+    Type: String
+    Description: Name of the pre-created CloudFormation service role (from pr-roles.yaml) that this role is allowed to PassRole into the per-PR deploy.
+    Default: taskaws-go-pr-cfn-role
+  TaskRoleName:
+    Type: String
+    Description: Name of the pre-created ECS task role (from pr-roles.yaml) that this role is allowed to PassRole into the per-PR deploy.
+    Default: taskaws-go-pr-task-role
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # ONE role assumed by GitHub Actions via OIDC. All policies are inline (no
+  # managed policies) so the blast radius is exactly the actions listed below.
+  # No iam:CreateRole — the cfn + task roles are pre-created by pr-roles.yaml.
+  # ---------------------------------------------------------------------------
+  GithubOidcRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: taskaws-go-pr-gh-oidc-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GithubRepo}:pull_request'
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+      Policies:
+        # ECR: auth (global) + push/pull scoped to the shared taskaws-go repo.
+        # docker push needs InitiateLayerUpload/UploadLayerPart/CompleteLayerUpload
+        # in addition to PutImage, so they are all included.
+        - PolicyName: EcrPush
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/taskaws-go'
+
+        # CloudFormation: manage only per-PR stacks (taskaws-go-pr-<n>).
+        # Describe* covers DescribeStacks + DescribeChangeSet used by `deploy`.
+        - PolicyName: CloudFormationPerPr
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:Describe*
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/taskaws-go-pr-*/*'
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/taskaws-go-pr-*/*'
+
+        # iam:PassRole — ONLY the pre-created cfn-role + task-role. This role
+        # cannot create or pass any other role. Scoped to the two names from
+        # pr-roles.yaml (no wildcard).
+        - PolicyName: PassPrRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${CfnRoleName}'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${TaskRoleName}'
+
+        # SSM: read the per-PR preview params (DB reader URL, CORS, CF token).
+        - PolicyName: SsmReadPrParams
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/taskaws-go/pr/*'
+
+        # CloudWatch Logs: create log groups/streams for the GHA run itself.
+        - PolicyName: LogsCreate
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/github/*'
+
+        # CloudMap: read-only lookup of services/instances under the shared
+        # namespace so the workflow can verify this PR's service registered.
+        # WHY resource '*': ListServices / GetService / ListInstances operate
+        # on dynamic service IDs and account-level list calls that cannot be
+        # scoped to a single ARN; these are read-only.
+        - PolicyName: CloudMapRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - servicediscovery:ListServices
+                  - servicediscovery:GetService
+                  - servicediscovery:ListInstances
+                Resource: '*'
+
+Outputs:
+  OidcRoleArn:
+    Description: |
+      ARN of the GitHub Actions OIDC role. Store this as a GitHub Actions
+      repository VARIABLE named TASKAWS_GO_OIDC_ROLE_ARN (not a secret) so the
+      pr-preview workflow can assume it via aws-actions/configure-aws-credentials.
+    Value: !GetAtt GithubOidcRole.Arn

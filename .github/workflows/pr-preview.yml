@@ -1,0 +1,254 @@
+name: Go PR preview
+
+# -----------------------------------------------------------------------------
+# Per-PR preview environments for the Go intro service, driven by GitHub
+# Actions + OIDC (no CodeBuild webhook, no long-lived AWS keys).
+#
+# Flow:
+#   pull_request opened/synchronized/reopened -> build image, deploy a per-PR
+#   CloudFormation stack into the SHARED prod cluster/ALB listener, expose it
+#   via cloudflared, build the SPA pointing at it, deploy the SPA to
+#   Cloudflare Pages, post the preview URLs back to the PR.
+#   pull_request closed                       -> tear down the per-PR stack +
+#   the Cloudflare Pages project.
+#
+# Prerequisites:
+#   - GitHub OIDC provider created in IAM (see infra/go/gh-oidc-role.yaml).
+#   - infra/go/gh-oidc-role.yaml deployed once; its OidcRoleArn output stored
+#     as a repo VARIABLE named TASKAWS_GO_OIDC_ROLE_ARN.
+#   - SSM params under /taskaws-go/pr/* (database-reader-url, cors-origin,
+#     cloudflare/api-token) must exist.
+#   - prod stack `taskaws-go` + `taskaws-go-pr-roles` deployed.
+# -----------------------------------------------------------------------------
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+# The build (opened/synchronize/reopened) cancels in-flight builds for the
+# same PR. The closed teardown path is the terminal event for a PR, so it is
+# not cancelled by a later build — closed is always the last action.
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+  PROD_STACK: taskaws-go
+  ECR_REPO: 977778967406.dkr.ecr.us-east-1.amazonaws.com/taskaws-go
+  PR_ROLES_STACK: taskaws-go-pr-roles
+  HOST_DOMAIN: preview.taskaws.local
+
+jobs:
+  preview:
+    name: Build / deploy / teardown preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TASKAWS_GO_OIDC_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Resolve PR number + action
+        id: pr
+        run: |
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> "$GITHUB_ENV"
+          if [ "${{ github.event.action }}" = "closed" ]; then
+            echo "IS_CLOSED=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_CLOSED=false" >> "$GITHUB_ENV"
+          fi
+
+      # ---------------------------------------------------------------------
+      # Toolchains the Go build + tunnel + Pages deploy need.
+      # ---------------------------------------------------------------------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install cloudflared
+        run: |
+          curl -sSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
+            -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      # ---------------------------------------------------------------------
+      # BRANCH A — PR closed: best-effort teardown, then exit clean.
+      # ---------------------------------------------------------------------
+      - name: Teardown preview (on close)
+        if: env.IS_CLOSED == 'true'
+        run: |
+          set +e
+          echo "Tearing down preview for PR $PR_NUMBER"
+          aws cloudformation delete-stack --stack-name "taskaws-go-pr-$PR_NUMBER" --region "$AWS_REGION"
+          # Fetch the CF token only now (the SSM step is skipped on the close
+          # path) so the best-effort Pages project removal can authenticate.
+          CF_TOKEN="$(aws ssm get-parameter --name /taskaws-go/pr/cloudflare/api-token --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text 2>/dev/null || true)"
+          if [ -n "$CF_TOKEN" ]; then
+            CLOUDFLARE_API_TOKEN="$CF_TOKEN" wrangler pages project delete "taskaws-go-pr-$PR_NUMBER" --yes \
+              || echo "warn: pages project delete failed (may not exist)"
+          else
+            echo "warn: no CF token — skipping Pages project delete"
+          fi
+          echo "Preview torn down for PR $PR_NUMBER"
+          exit 0
+
+      # ---------------------------------------------------------------------
+      # BRANCH B — PR open/update: build, deploy stack, expose, comment.
+      # ---------------------------------------------------------------------
+      - name: Docker login to ECR
+        if: env.IS_CLOSED == 'false'
+        run: aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REPO"
+
+      - name: Build + push PR image
+        if: env.IS_CLOSED == 'false'
+        run: |
+          IMAGE="$ECR_REPO:pr-$PR_NUMBER"
+          docker build --platform linux/amd64 -f apps/intro-go/Dockerfile -t "$IMAGE" apps/intro-go
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Fetch SSM preview params
+        if: env.IS_CLOSED == 'false'
+        run: |
+          echo "DATABASE_READER_URL=$(aws ssm get-parameter --name /taskaws-go/pr/database-reader-url --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text)" >> "$GITHUB_ENV"
+          echo "CORS_ORIGIN=$(aws ssm get-parameter --name /taskaws-go/pr/cors-origin --region "$AWS_REGION" --query 'Parameter.Value' --output text)" >> "$GITHUB_ENV"
+          echo "CF_TOKEN=$(aws ssm get-parameter --name /taskaws-go/pr/cloudflare/api-token --with-decryption --region "$AWS_REGION" --query 'Parameter.Value' --output text)" >> "$GITHUB_ENV"
+          # Mask the secrets in logs.
+          echo "::add-mask::$DATABASE_READER_URL"
+          echo "::add-mask::$CF_TOKEN"
+
+      - name: Fetch shared infra outputs (prod + pr-roles stacks)
+        if: env.IS_CLOSED == 'false'
+        run: |
+          q() { aws cloudformation describe-stacks --stack-name "$1" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text; }
+          echo "CLUSTER=$(q "$PROD_STACK" EcsClusterName)" >> "$GITHUB_ENV"
+          echo "NS_ID=$(q "$PROD_STACK" CloudMapNamespaceId)" >> "$GITHUB_ENV"
+          echo "LISTENER_ARN=$(q "$PROD_STACK" SharedAlbListenerArn)" >> "$GITHUB_ENV"
+          echo "ALB_SG_ID=$(q "$PROD_STACK" SharedAlbSecurityGroupId)" >> "$GITHUB_ENV"
+          echo "ALB_DNS=$(q "$PROD_STACK" SharedAlbDnsName)" >> "$GITHUB_ENV"
+          echo "CFN_ROLE_ARN=$(q "$PR_ROLES_STACK" Role2Arn)" >> "$GITHUB_ENV"
+          echo "TASK_ROLE_ARN=$(q "$PR_ROLES_STACK" Role3Arn)" >> "$GITHUB_ENV"
+
+      - name: Deploy per-PR CloudFormation stack
+        if: env.IS_CLOSED == 'false'
+        run: |
+          aws cloudformation deploy \
+            --stack-name "taskaws-go-pr-$PR_NUMBER" \
+            --template-file infra/go/pr-template.yaml \
+            --role-arn "$CFN_ROLE_ARN" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              PrId="$PR_NUMBER" \
+              TaskRoleArn="$TASK_ROLE_ARN" \
+              ImageUrl="$IMAGE" \
+              DatabaseReaderUrl="$DATABASE_READER_URL" \
+              CorsOrigin="$CORS_ORIGIN" \
+              EcsCluster="$CLUSTER" \
+              CloudMapNamespaceId="$NS_ID" \
+              AlbListenerArn="$LISTENER_ARN" \
+              AlbSecurityGroupId="$ALB_SG_ID" \
+              HostDomain="$HOST_DOMAIN"
+
+      - name: Read preview host + shared ALB DNS
+        if: env.IS_CLOSED == 'false'
+        run: |
+          q() { aws cloudformation describe-stacks --stack-name "taskaws-go-pr-$PR_NUMBER" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+          echo "PREVIEW_HOST=$(q PreviewHost)" >> "$GITHUB_ENV"
+          echo "SHARED_ALB_DNS=$(q SharedAlbDnsName)" >> "$GITHUB_ENV"
+          echo "Preview host: $PREVIEW_HOST"
+          echo "Shared ALB DNS: $SHARED_ALB_DNS"
+
+      # ---------------------------------------------------------------------
+      # cloudflared quick tunnel — public https URL for the preview host.
+      # CAVEAT (continue-on-error): a trycloudflare.com URL is ephemeral and
+      # dies when the job ends. Real reviewer access needs wildcard DNS
+      # (*.preview.taskaws.local) + a named Cloudflare tunnel routed by
+      # host-header on the shared ALB; this step only proves reachability.
+      # ---------------------------------------------------------------------
+      - name: Cloudflare quick tunnel (ephemeral)
+        if: env.IS_CLOSED == 'false'
+        continue-on-error: true
+        run: |
+          if [ -z "${PREVIEW_HOST:-}" ]; then
+            echo "warn: no preview host — skipping tunnel"
+            exit 0
+          fi
+          nohup cloudflared tunnel --no-autoupdate --url "http://$PREVIEW_HOST" >/tmp/cf.log 2>&1 &
+          for _ in $(seq 1 60); do
+            sleep 1
+            BACKEND_URL="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -n1 || true)"
+            [ -n "$BACKEND_URL" ] && break
+          done
+          echo "BACKEND_URL=${BACKEND_URL:-}" >> "$GITHUB_ENV"
+          if [ -z "${BACKEND_URL:-}" ]; then echo "warn: no tunnel URL captured in 60s"; fi
+
+      # ---------------------------------------------------------------------
+      # Build the SPA pointing at the preview host, deploy to Cloudflare Pages.
+      # DNS CAVEAT: VITE_INTRO_SERVICE_URL uses the preview host which is only
+      # resolvable once the named-tunnel DNS exists; until then the SPA falls
+      # back to the shared ALB DNS.
+      # ---------------------------------------------------------------------
+      - name: Setup Node + pnpm
+        if: env.IS_CLOSED == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        if: env.IS_CLOSED == 'false'
+        run: |
+          npm install -g corepack@latest
+          corepack enable
+          corepack prepare pnpm@11.6.0 --activate
+
+      - name: Build web (SPA) for preview
+        if: env.IS_CLOSED == 'false'
+        run: |
+          pnpm install --frozen-lockfile
+          VITE_INTRO_SERVICE_URL="${PREVIEW_HOST:-$SHARED_ALB_DNS}" \
+            pnpm -F web build
+
+      - name: Deploy SPA to Cloudflare Pages
+        if: env.IS_CLOSED == 'false'
+        continue-on-error: true
+        run: |
+          FRONTEND_URL=""
+          if [ -d apps/web/build/client ]; then
+            FRONTEND_URL="$(CLOUDFLARE_API_TOKEN="$CF_TOKEN" wrangler pages deploy apps/web/build/client \
+              --project-name="taskaws-go-pr-$PR_NUMBER" --commit-dirty=true 2>/dev/null \
+              | grep -Eo 'https://[a-z0-9.-]+\.pages\.dev' | head -n1 || true)"
+          else
+            echo "warn: apps/web/build/client not found — SPA build did not emit output"
+          fi
+          echo "FRONTEND_URL=${FRONTEND_URL:-}" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------------
+      # Post the preview URLs back to the PR. Uses the built-in GITHUB_TOKEN
+      # (no PAT needed). continue-on-error so the deploy remains source of
+      # truth even if commenting fails.
+      # ---------------------------------------------------------------------
+      - name: Post preview URLs as PR comment
+        if: env.IS_CLOSED == 'false'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BODY="$(printf 'Preview backend: %s\nPreview frontend: %s' \
+            "${BACKEND_URL:-<pending>}" "${FRONTEND_URL:-<pending>}")"
+          gh pr comment "$PR_NUMBER" --body "$BODY"

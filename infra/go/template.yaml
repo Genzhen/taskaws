@@ -1,0 +1,473 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: TaskAWS Go intro microservice on ECS Fargate behind an internet-facing ALB, registered into CloudMap (intro.taskaws.local), reading the existing RDS Postgres reader.
+
+# =============================================================================
+# Parameters — discovered real AWS IDs are the defaults so the stack deploys
+# with minimal --parameter-overrides. DatabaseReaderUrl and ImageUrl are
+# required (no safe default).
+# =============================================================================
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC that contains the private Fargate/RDS subnets
+    Default: vpc-0100e9f3e19120c53
+  IgwId:
+    Type: String
+    Description: Existing Internet Gateway already attached to VpcId (used for the public route the ALB needs)
+    Default: igw-0325e75afae3aa258
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing private subnet (us-east-1a) routed via NAT — where Fargate tasks live
+    Default: subnet-0952e2f162d9221c1
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing private subnet (us-east-1b) routed via NAT — where Fargate tasks live
+    Default: subnet-02013ba8ad282d639
+  PublicSubnetACidr:
+    Type: String
+    Description: CIDR for the new public subnet A (free range — existing VPC uses .10/.11/.12)
+    Default: 10.0.20.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Description: CIDR for the new public subnet B (free range — existing VPC uses .10/.11/.12)
+    Default: 10.0.21.0/24
+  DatabaseSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group attached to the existing RDS PostgreSQL instances
+    Default: sg-088f299ef45073f8a
+  DatabaseReaderUrl:
+    Type: String
+    NoEcho: true
+    Description: PostgreSQL reader connection string (e.g. postgresql://user:pass@task-db-reader...:5432/db)
+  CorsOrigin:
+    Type: String
+    Description: Allowed frontend origin for CORS (set to the real origin in prod; default permissive for dev)
+    Default: '*'
+  ImageUrl:
+    Type: String
+    Description: ECR image for the Go intro service (e.g. 977778967406.dkr.ecr.us-east-1.amazonaws.com/taskaws-go:v1)
+  PrId:
+    Type: String
+    Description: PR identifier for ephemeral preview stacks (Phase 3). Empty = prod stack.
+    Default: ''
+  TaskRoleArn:
+    Type: String
+    Description: Pre-existing role ARN to reuse for both execution + task roles (Phase 3). Empty = stack creates its own roles.
+    Default: ''
+  DesiredCount:
+    Type: Number
+    Description: ECS task count. Set to 0 for the initial deploy (image not pushed yet), then 1 after the image is in ECR.
+    Default: 1
+    MinValue: 0
+    MaxValue: 10
+
+# =============================================================================
+# Conditions
+#   IsPr            — non-empty PrId => suffix resource names for preview isolation.
+#   IsSelfManagedRole — empty TaskRoleArn => this stack provisions its own roles.
+# =============================================================================
+Conditions:
+  IsPr: !Not [!Equals [!Ref PrId, '']]
+  IsSelfManagedRole: !Equals [!Ref TaskRoleArn, '']
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # ECR — image registry for the Go service. ScanOnPush + lifecycle to keep
+  # the last 10 tagged images and expire untagged images older than 7 days.
+  # ---------------------------------------------------------------------------
+  GoEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images older than 7 days",
+                "selection": { "tagStatus": "untagged", "countType": "sinceImagePushed", "countUnit": "days", "countNumber": 7 },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep last 10 tagged images",
+                "selection": { "tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10 },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  # ---------------------------------------------------------------------------
+  # Public subnets + route table.
+  # WHY created here: the existing VPC has NO public subnet — its main route
+  # table sends everything via NAT, and the IGW route table is unassociated.
+  # An internet-facing ALB therefore needs its own public subnets plus a route
+  # table with a 0.0.0.0/0 -> IGW route. These are stack-owned and additive.
+  # ---------------------------------------------------------------------------
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcId
+      AvailabilityZone: us-east-1a
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !If [IsPr, !Sub 'taskaws-go-pub-a-pr-${PrId}', 'taskaws-go-pub-a']
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VpcId
+      AvailabilityZone: us-east-1b
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !If [IsPr, !Sub 'taskaws-go-pub-b-pr-${PrId}', 'taskaws-go-pub-b']
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !If [IsPr, !Sub 'taskaws-go-pub-pr-${PrId}', 'taskaws-go-pub']
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - PublicRouteTable
+      - PublicSubnetA
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IgwId
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------------------------------------------------------------------------
+  # ECS cluster + CloudMap service discovery.
+  # The private DNS namespace lets the existing Lambda (stack "taskaws", same
+  # VPC) resolve intro.taskaws.local to the Fargate task IP via CloudMap.
+  # ---------------------------------------------------------------------------
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  CloudMapNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: taskaws.local
+      Vpc: !Ref VpcId
+
+  CloudMapService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: !If [IsPr, !Sub 'intro-pr-${PrId}', 'intro']
+      NamespaceId: !Ref CloudMapNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 10
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ---------------------------------------------------------------------------
+  # ALB security group. Inbound 80 from anywhere; outbound 8080 only to the
+  # task SG. The reverse rule (task ingress from ALB) is a separate
+  # AWS::EC2::SecurityGroupIngress resource below to avoid the classic
+  # mutual-SG-reference circular dependency.
+  # ---------------------------------------------------------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !If [IsPr, !Sub 'taskaws-go-alb-pr-${PrId}', 'taskaws-go-alb']
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from the internet
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          DestinationSecurityGroupId: !GetAtt TaskSecurityGroup.GroupId
+          Description: Forward to Go intro tasks
+
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !GetAtt AlbSecurityGroup.GroupId
+
+  # Target type ip so Fargate tasks register their ENI IP directly (awsvpc).
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Matcher:
+        HttpCode: '200'
+
+  AlbHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AlbTargetGroup
+
+  # ---------------------------------------------------------------------------
+  # Task security group. Egress 5432 (RDS) and 443 (GitHub) to anywhere.
+  # Inbound 8080 from the ALB is defined as a separate ingress resource to
+  # break the ALB-SG <-> Task-SG mutual dependency.
+  # ---------------------------------------------------------------------------
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !If [IsPr, !Sub 'taskaws-go-task-pr-${PrId}', 'taskaws-go-task']
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+          Description: PostgreSQL egress to the existing RDS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS egress for outbound API calls
+
+  TaskIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow the ALB to reach the Go intro tasks on 8080
+      GroupId: !GetAtt TaskSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !GetAtt AlbSecurityGroup.GroupId
+
+  # ---------------------------------------------------------------------------
+  # RDS ingress — mirrors the existing DatabaseIngressFromLambda rule so the
+  # task SG is allowed to reach Postgres on 5432.
+  # ---------------------------------------------------------------------------
+  DatabaseIngressFromGo:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Allow taskaws-go Fargate tasks to connect to PostgreSQL
+      GroupId: !Ref DatabaseSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !GetAtt TaskSecurityGroup.GroupId
+
+  # ---------------------------------------------------------------------------
+  # Logs — 14 day retention.
+  # ---------------------------------------------------------------------------
+  TaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !If [IsPr, !Sub '/ecs/taskaws-go-pr-${PrId}', '/ecs/taskaws-go']
+      RetentionInDays: 14
+
+  # ---------------------------------------------------------------------------
+  # IAM — created only when TaskRoleArn is empty (IsSelfManagedRole). When a
+  # role ARN is passed in (Phase 3 reuse), these are skipped and the passed
+  # role is used for both execution and task role.
+  # ---------------------------------------------------------------------------
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: IsSelfManagedRole
+    Properties:
+      RoleName: !If [IsPr, !Sub 'taskaws-go-exec-pr-${PrId}', 'taskaws-go-exec']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: EcrRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${GoEcrRepository}'
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+        - PolicyName: LogsCreate
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt TaskLogGroup.Arn
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Condition: IsSelfManagedRole
+    Properties:
+      RoleName: !If [IsPr, !Sub 'taskaws-go-task-pr-${PrId}', 'taskaws-go-task']
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  # ---------------------------------------------------------------------------
+  # Task definition — 0.5 vCPU / 1 GB Fargate. Execution + task role resolve
+  # to the self-managed roles or the passed TaskRoleArn via Fn::If.
+  # ---------------------------------------------------------------------------
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !If [IsSelfManagedRole, !GetAtt TaskExecutionRole.Arn, !Ref TaskRoleArn]
+      TaskRoleArn: !If [IsSelfManagedRole, !GetAtt TaskRole.Arn, !Ref TaskRoleArn]
+      ContainerDefinitions:
+        - Name: intro
+          Image: !Ref ImageUrl
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: DATABASE_READER_URL
+              Value: !Ref DatabaseReaderUrl
+            - Name: CORS_ORIGIN
+              Value: !Ref CorsOrigin
+            - Name: PORT
+              Value: '8080'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref TaskLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: intro
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'wget -qO- http://localhost:8080/health || exit 1'
+
+  # ---------------------------------------------------------------------------
+  # ECS service — runs in the existing private subnets (NAT egress), registers
+  # into CloudMap and the ALB target group. DependsOn the listener so the
+  # target group is wired before the service tries to register.
+  # ---------------------------------------------------------------------------
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: AlbHttpListener
+    Properties:
+      ServiceName: !If [IsPr, !Sub 'taskaws-go-pr-${PrId}', 'taskaws-go']
+      Cluster: !Ref EcsCluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PrivateSubnetA
+            - !Ref PrivateSubnetB
+          SecurityGroups:
+            - !GetAtt TaskSecurityGroup.GroupId
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: intro
+          ContainerPort: 8080
+          TargetGroupArn: !Ref AlbTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt CloudMapService.Arn
+          ContainerName: intro
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  AlbDnsUrl:
+    Description: Public ALB URL for the Go intro service
+    Value: !Sub 'http://${Alb.DNSName}'
+  EcrRepositoryUri:
+    Description: ECR repository URI for the Go intro image
+    Value: !GetAtt GoEcrRepository.RepositoryUri
+  CloudMapServiceArn:
+    Description: CloudMap service ARN (intro service)
+    Value: !Ref CloudMapService
+  EcsServiceName:
+    Description: ECS service name
+    Value: !GetAtt EcsService.Name
+  CloudMapDnsName:
+    Description: Private DNS name resolvable from within the VPC (used by the taskaws Lambda)
+    Value: !If [IsPr, !Sub 'intro-pr-${PrId}.taskaws.local', 'intro.taskaws.local']
+  EcsClusterName:
+    Description: ECS cluster name (shared by per-PR preview stacks)
+    Value: !Ref EcsCluster
+  CloudMapNamespaceId:
+    Description: CloudMap private DNS namespace Id (shared by per-PR preview stacks)
+    Value: !GetAtt CloudMapNamespace.Id
+  PublicSubnetA:
+    Description: Public subnet A Id (shared by per-PR preview ALBs)
+    Value: !Ref PublicSubnetA
+  PublicSubnetB:
+    Description: Public subnet B Id (shared by per-PR preview ALBs)
+    Value: !Ref PublicSubnetB

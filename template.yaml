@@ -50,6 +50,10 @@ Parameters:
     Type: String
     Description: Allowed frontend origin for CORS and better-auth trustedOrigins (e.g. https://app.example.com)
     Default: ""
+  IntroServiceUrl:
+    Type: String
+    Description: Base URL of the Go intro service (CloudMap private DNS name resolved inside the VPC)
+    Default: ""
 
 # =============================================================================
 # Resources
@@ -113,6 +117,7 @@ Resources:
           BETTER_AUTH_SECRET: !Ref BetterAuthSecret
           BETTER_AUTH_URL: !Ref BetterAuthUrl
           CORS_ORIGIN: !Ref CorsOrigin
+          INTRO_SERVICE_URL: !Ref IntroServiceUrl
 
       VpcConfig:
         SubnetIds:

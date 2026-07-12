@@ -187,7 +187,8 @@ jobs:
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
               BetterAuthUrl="${{ env.FRONTEND_ORIGIN }}" \
-              CorsOrigin="${{ env.FRONTEND_ORIGIN }}"
+              CorsOrigin="${{ env.FRONTEND_ORIGIN }}" \
+              IntroServiceUrl="http://intro.taskaws.local:8080"
 
       # -------------------------------------------------------------------------
       # Read the Lambda Function URL from the stack outputs.
@@ -229,7 +230,8 @@ jobs:
               DatabaseReaderUrl="${{ secrets.DATABASE_READER_URL }}" \
               BetterAuthSecret="${{ secrets.BETTER_AUTH_SECRET }}" \
               BetterAuthUrl="${{ steps.get-url.outputs.lambda_url }}" \
-              CorsOrigin="${{ env.FRONTEND_ORIGIN }}"
+              CorsOrigin="${{ env.FRONTEND_ORIGIN }}" \
+              IntroServiceUrl="http://intro.taskaws.local:8080"
 
   # ---------------------------------------------------------------------------
   # deploy-frontend — build web with VITE_SERVER_URL → S3 + CloudFront

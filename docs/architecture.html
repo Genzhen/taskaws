@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TaskAWS-Go 架构图 — 已建 vs 目标</title>
+<style>
+  :root{
+    --purple:#6c5ce7; --blue:#3498db; --green:#00b894; --orange:#e17055;
+    --red:#d63031; --gray:#636e72; --ink:#2d3436;
+    --a-bg:#ffffff; --b-bg:#e8f5e9; --c-bg:#e3f2fd;
+    --built:#00b894; --target:#6c5ce7;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"PingFang SC","Segoe UI",Roboto,Arial,sans-serif;margin:0;background:#f5f6fa;color:var(--ink);padding:24px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--gray);font-size:13px;margin-bottom:18px}
+  hgroup.group-h{display:flex;align-items:center;gap:10px;margin:22px 0 10px;padding:10px 14px;border-radius:10px;color:#fff}
+  .group-h.built{background:var(--built)}
+  .group-h.target{background:var(--target)}
+  .group-h h2{margin:0;font-size:16px}
+  .group-h .gmeta{font-size:12px;opacity:.9}
+  .section{border:1px solid #dfe6e9;border-radius:12px;padding:14px 16px;margin-bottom:12px;position:relative}
+  .section h3{font-size:13px;margin:0 0 10px;display:flex;align-items:center;gap:8px}
+  .tag{font-size:11px;font-weight:700;background:var(--ink);color:#fff;border-radius:4px;padding:2px 7px}
+  .tag.b{background:var(--built)} .tag.t{background:var(--target)}
+  .a{background:var(--a-bg)} .b{background:var(--b-bg)} .c{background:var(--c-bg)}
+  .row{display:flex;align-items:stretch;gap:0;flex-wrap:wrap}
+  .node{background:#fff;border:1.5px solid #b2bec3;border-radius:8px;padding:7px 9px;min-width:108px;text-align:center;font-size:11.5px;line-height:1.35;box-shadow:0 1px 2px rgba(0,0,0,.05);display:flex;flex-direction:column;justify-content:center;gap:2px;position:relative}
+  .node b{font-size:12px}
+  .node .ic{font-size:17px}
+  .node .meta{font-size:10.5px;color:var(--gray)}
+  .purple{border-color:var(--purple)} .blue{border-color:var(--blue)} .green{border-color:var(--green)} .orange{border-color:var(--orange)} .red{border-color:var(--red)}
+  .new{outline:2px dotted var(--target)}
+  .new::after{content:"新增";position:absolute;top:-8px;right:-6px;background:var(--target);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px}
+  .diff::after{content:"不同";position:absolute;top:-8px;right:-6px;background:var(--orange);color:#fff;font-size:9px;padding:1px 5px;border-radius:8px}
+  .pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;background:#dfe6e9;color:var(--gray);margin-top:2px}
+  .arrow{display:flex;align-items:center;justify-content:center;padding:0 5px;color:var(--gray);font-size:17px;min-width:24px}
+  .arrow.label{font-size:10px;flex-direction:column;gap:1px;color:var(--gray)}
+  .arrow .l{font-size:9.5px;background:#fff;border:1px solid #dfe6e9;border-radius:4px;padding:1px 4px;color:var(--gray)}
+  .grp{border:1.5px dashed #b2bec3;border-radius:10px;padding:9px;margin:0 3px;background:rgba(255,255,255,.55)}
+  .grp>h4{margin:0 0 7px;font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:.5px}
+  .vpc{border:2px solid var(--green);border-radius:14px;padding:12px;background:rgba(0,184,148,.04)}
+  .vpc>h4{margin:0 0 8px;color:var(--green);font-size:12.5px}
+  .az{border:1px dotted #b2bec3;border-radius:8px;padding:7px;background:#fff}
+  .az h5{margin:0 0 5px;font-size:10.5px;color:var(--gray)}
+  .col{display:flex;flex-direction:column;gap:7px;flex:1;min-width:130px}
+  .stack{display:flex;flex-direction:column;gap:5px;font-size:11.5px}
+  .two-col{display:flex;gap:10px;flex-wrap:wrap}
+  .two-col>div{flex:1;min-width:250px}
+  .note{font-size:10.5px;color:var(--gray);margin-top:6px}
+  code{background:#f1f2f6;border-radius:3px;padding:0 4px;font-size:10.5px}
+  .prohibit{color:var(--red);font-weight:700}
+
+  /* diff table */
+  table.diff{border-collapse:collapse;width:100%;font-size:12px;background:#fff;border:1px solid #dfe6e9;border-radius:10px;overflow:hidden;margin-bottom:6px}
+  table.diff th,table.diff td{border-bottom:1px solid #ecf0f1;padding:8px 10px;text-align:left;vertical-align:top}
+  table.diff th{background:#f1f2f6;font-size:11px}
+  table.diff tr:last-child td{border-bottom:none}
+  table.diff td.k{font-weight:600;width:120px;color:var(--ink)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--gray);background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:10px 14px;margin-top:10px}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .swatch{width:20px;height:0;border-top:3px solid;display:inline-block}
+  .badge-dot{display:inline-block;width:10px;height:10px;border-radius:50%}
+</style>
+</head>
+<body>
+
+<h1>TaskAWS-Go 架构图 — 已建 vs 目标参考</h1>
+<div class="sub">左/上：<b style="color:var(--built)">已建架构</b>（实测验证后拆除，0 费用） · 右/下：<b style="color:var(--target)">目标参考架构</b>（你提供的图，待补齐）。虚线紫框=需新增，橙标"不同"=做法不一样。</div>
+
+<!-- ============ DIFF TABLE ============ -->
+<table class="diff">
+  <tr><th>维度</th><th>✅ 已建（当前）</th><th>🎯 目标（参考图）</th><th>差距</th></tr>
+  <tr><td class="k">入口</td><td>浏览器<b>直连 ALB</b></td><td><b>API Gateway</b> 统一入口，<code>/cloudmap/*</code> vs <code>/alb/*</code> 双路径分流</td><td>缺 API GW + 双路由</td></tr>
+  <tr><td class="k">ALB</td><td><b>Internet-facing</b>（公网）</td><td><b>Internal</b> + API GW <b>VPC Link</b>（私有，只经 API GW）</td><td>需改 internal + VPC Link</td></tr>
+  <tr><td class="k">CloudMap 路径</td><td>现有 <code>taskaws-api</code> Lambda 的 <code>intro.proxy</code>（复用）</td><td>独立 <b>Node Lambda（校验转发）</b> ← API GW</td><td>复用 vs 独立转发 Lambda</td></tr>
+  <tr><td class="k">DB 凭证</td><td><b>明文 env</b> <code>DATABASE_READER_URL</code></td><td><b>Secrets Manager</b>（Task Role GetSecretValue）</td><td>安全加固待补</td></tr>
+  <tr><td class="k">每-PR 入口</td><td>每 PR <b>独立 ALB</b>（成本高）</td><td><b>共享 ALB + Listener Rule</b>（每 PR 一条规则）</td><td>降本优化</td></tr>
+  <tr><td class="k">CI 鉴权</td><td>CodeBuild webhook（自有 role）</td><td><b>GitHub Actions + OIDC</b>（GitHubOIDCRole）</td><td>更规范的触发/鉴权</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<!-- ============== 已建架构（当前实测验证） ============== -->
+<!-- ================================================================ -->
+<hgroup class="group-h built"><h2>✅ 已建架构</h2><span class="gmeta">Phase 1/2/3 实测通过后已全部拆除 · 0 持续费用</span></hgroup>
+
+<div class="section a">
+  <h3><span class="tag b">A</span> 数据流双路径 — 浏览器直连 Go · Lambda 经 CloudMap 调 Go</h3>
+  <div class="row">
+    <div class="node"><span class="ic">🌐</span><b>浏览器</b><span class="meta">/intro</span></div>
+    <div class="arrow label"><span>VITE_INTRO_SERVICE_URL</span></div>
+    <div class="grp">
+      <h4>接入层（按环境切 URL）</h4>
+      <div class="row">
+        <div class="node orange"><span class="ic">☁️</span><b>Cloudflare Tunnel</b><span class="meta">预览</span></div>
+        <div class="node purple"><span class="ic">🧱</span><b>ALB</b><span class="meta">公网 :80 · 生产</span></div>
+        <div class="node"><span class="ic">💻</span><b>localhost</b><span class="meta">开发</span></div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node orange"><span class="ic">🐹</span><b>Go intro</b><span class="meta">Fargate :8080</span><span class="pill">SSE</span></div>
+    <div class="arrow">→</div>
+    <div class="node blue"><span class="ic">🗄️</span><b>RDS</b><span class="meta">reader · sslmode=require</span></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <div class="node purple"><span class="ic">λ</span><b>Lambda taskaws-api</b><span class="meta">tRPC intro.proxy</span></div>
+    <div class="arrow label"><span>intro.taskaws.local</span><span class="l">CloudMap</span></div>
+    <div class="node green"><span class="ic">🗺️</span><b>Cloud Map</b><span class="meta">intro→10.0.11.242</span></div>
+    <div class="arrow">→</div>
+    <div class="node orange"><span class="ic">🐹</span><b>Go intro</b></div>
+  </div>
+</div>
+
+<div class="section b">
+  <h3><span class="tag b">B</span> VPC 与安全边界 — taskaws-go 栈</h3>
+  <div class="vpc">
+    <h4>🏷️ VPC vpc-0100e9f3e19120c53 (10.0.0.0/16)</h4>
+    <div class="two-col">
+      <div class="grp" style="background:#fff"><h4>公有子网（栈自建 · IGW）</h4>
+        <div class="row"><div class="az"><h5>1a · 10.0.20/24</h5><div class="node purple" style="margin:0 auto"><b>ALB</b></div></div><div class="az"><h5>1b · 10.0.21/24</h5><div class="node purple" style="margin:0 auto"><b>ALB</b></div></div></div>
+        <div class="node" style="margin-top:6px"><span class="ic">🚪</span><b>NAT GW</b><span class="meta">拉镜像/推日志</span></div>
+      </div>
+      <div class="grp" style="background:#fff"><h4>私有子网（已有 · NAT）</h4>
+        <div class="row" style="gap:7px">
+          <div class="az col"><h5>1a · 10.0.11/24</h5><div class="node orange"><b>Fargate</b><span class="meta">Go</span></div></div>
+          <div class="az col"><h5>1b · 10.0.12/24</h5><div class="node orange"><b>Fargate</b><span class="meta">Go</span></div></div>
+        </div>
+        <div class="node blue" style="margin-top:6px"><span class="ic">🗄️</span><b>RDS PostgreSQL</b><span class="meta">writer+reader · sg-088f...</span></div>
+      </div>
+    </div>
+    <div class="grp" style="background:#fff;margin-top:8px"><h4>安全组最小授权</h4>
+      <div class="stack">🌐 0.0.0.0/0 → <code>ALB-SG:80</code> → <code>Task-SG:8080</code> → <code>RDS-SG:5432</code>　<span class="prohibit">🚫 禁公网直连 task/RDS</span></div>
+      <div class="note">DB 凭证：<b>明文 env</b>（沿用项目约定）· 支撑：CloudMap / ECR / Cluster</div>
+    </div>
+  </div>
+</div>
+
+<div class="section c">
+  <h3><span class="tag b">C</span> PR 预览 & CI/CD — Phase 3</h3>
+  <div class="two-col">
+    <div class="grp" style="background:#fff"><h4>① 构建（CodeBuild · 3 IAM 角色）</h4>
+      <div class="row"><div class="node"><span class="ic">🐙</span><b>GitHub PR</b></div><div class="arrow">→</div><div class="node purple"><span class="ic">🔨</span><b>CodeBuild</b><span class="meta">amd64 build</span></div><div class="arrow">→</div><div class="node purple"><span class="ic">📦</span><b>ECR</b><span class="meta">:pr-N</span></div></div>
+      <div class="stack" style="margin-top:5px">① codebuild-role ② cfn-role(无 iam) ③ task-role</div>
+    </div>
+    <div class="grp" style="background:#fff"><h4>②③ 每-PR 独立 ALB + Cloudflare</h4>
+      <div class="stack">
+        <div class="node orange diff"><span class="ic">🧱</span><b>per-PR ALB（独立）</b><span class="meta">taskaws-go-pr-N</span></div>
+        <div class="node orange"><span class="ic">🚇</span><b>cloudflared</b><span class="meta">quick tunnel（匿名）</span></div>
+        <div class="node blue"><span class="ic">📄</span><b>Cloudflare Pages</b><span class="meta">仅文档化</span></div>
+      </div>
+      <div class="note">④ 关 PR → delete-stack（teardown）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- ============== 目标参考架构（待补齐） ============== -->
+<!-- ================================================================ -->
+<hgroup class="group-h target"><h2>🎯 目标参考架构</h2><span class="gmeta">对照你提供的图 · 虚线紫框=需新增 · 橙标"不同"=做法不同</span></hgroup>
+
+<div class="section a">
+  <h3><span class="tag t">A</span> API Gateway 双路径分流 — CloudMap 路径 vs ALB 路径</h3>
+  <div class="row">
+    <div class="node"><span class="ic">🌐</span><b>浏览器</b></div>
+    <div class="arrow">→</div>
+    <div class="node"><span class="ic">🌍</span><b>自定义域名</b></div>
+    <div class="arrow">→</div>
+    <div class="node orange"><span class="ic">☁️</span><b>Cloudflare Pages</b><span class="meta">React 前端</span></div>
+    <div class="arrow">→</div>
+    <div class="node purple new"><span class="ic">🚪</span><b>Amazon API Gateway</b><span class="meta">统一入口 · VPC 外</span></div>
+  </div>
+  <div class="two-col" style="margin-top:10px">
+    <div class="grp" style="background:#fff"><h4>路径 A — CloudMap（蓝线）</h4>
+      <div class="row">
+        <div class="node blue"><b>/cloudmap/*</b></div>
+        <div class="arrow">→</div>
+        <div class="node orange new"><span class="ic">λ</span><b>Node Lambda</b><span class="meta">只做校验+转发</span></div>
+        <div class="arrow">→</div>
+        <div class="node green"><span class="ic">🗺️</span><b>Cloud Map</b><span class="meta">go-api.internal</span></div>
+      </div>
+    </div>
+    <div class="grp" style="background:#fff"><h4>路径 B — ALB（紫线）</h4>
+      <div class="row">
+        <div class="node purple"><b>/alb/*</b></div>
+        <div class="arrow">→</div>
+        <div class="node purple new"><span class="ic">🔗</span><b>VPC Link</b></div>
+        <div class="arrow">→</div>
+        <div class="node purple diff"><span class="ic">🧱</span><b>Internal ALB</b><span class="meta">非公网</span></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Target Group</b><span class="meta">:8080</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="row" style="margin-top:8px;justify-content:center">
+    <div class="arrow">↘&nbsp;&nbsp;两路径汇合&nbsp;&nbsp;↙</div>
+  </div>
+  <div class="row" style="justify-content:center">
+    <div class="node orange"><span class="ic">🐹</span><b>ECS Fargate — Go API :8080</b></div>
+    <div class="arrow">→</div>
+    <div class="node blue"><span class="ic">🗄️</span><b>RDS PostgreSQL</b></div>
+  </div>
+  <div class="note">🔑 与已建最大区别：单一 API Gateway 入口，按 URL 路径在「CloudMap 服务发现」和「ALB 直连」两种模式间分流——教学性地同时展示两种服务发现方案。</div>
+</div>
+
+<div class="section b">
+  <h3><span class="tag t">B</span> VPC & 安全 — Internal ALB + Secrets Manager</h3>
+  <div class="vpc">
+    <h4>AWS VPC</h4>
+    <div class="two-col">
+      <div class="grp" style="background:#fff"><h4>公有子网</h4>
+        <div class="node green" style="margin:0 auto"><span class="ic">🚪</span><b>NAT Gateway</b></div>
+      </div>
+      <div class="grp" style="background:#fff"><h4>私有 App 子网 A / C</h4>
+        <div class="stack">
+          <div class="node orange diff"><span class="ic">🧱</span><b>Internal ALB</b><span class="meta">+ VPC Link ENI</span></div>
+          <div class="node orange"><span class="ic">🐹</span><b>Fargate Task</b><span class="meta">Go API:8080</span></div>
+          <div class="node purple new"><span class="ic">λ</span><b>Node Lambda</b><span class="meta">VPC 内</span></div>
+        </div>
+      </div>
+      <div class="grp" style="background:#fff"><h4>私有 DB 子网 A / C</h4>
+        <div class="node blue"><span class="ic">🗄️</span><b>RDS PostgreSQL</b></div>
+      </div>
+    </div>
+    <div class="two-col" style="margin-top:8px">
+      <div class="grp" style="background:#fff"><h4>安全组（5 个）</h4>
+        <div class="stack" style="font-size:11px">Lambda-SG · ECS-SG · VPCLink-SG(new) · ALB-SG · RDS-SG<br><span class="prohibit">🚫 禁止直连 RDS/ALB</span> · 仅 TLS:5432</div>
+      </div>
+      <div class="grp" style="background:#fff"><h4>凭证 & 角色</h4>
+        <div class="stack">
+          <div class="node red new"><span class="ic">🔐</span><b>AWS Secrets Manager</b><span class="meta">数据库凭证</span></div>
+          <div class="node"><span class="ic">🗳️</span><b>ECS Task Role</b><span class="meta">GetSecretValue</span></div>
+          <div class="node purple"><span class="ic">📦</span><b>ECR</b><span class="meta">Go 镜像</span></div>
+        </div>
+        <div class="note">🔑 与已建区别：DB 凭证走 <b>Secrets Manager</b>（已建是明文 env）；ALB 是 <b>internal</b>（已建是公网）。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section c">
+  <h3><span class="tag t">C</span> PR 预览 & CI/CD — OIDC + 共享 ALB Rule</h3>
+  <div class="two-col">
+    <div class="grp" style="background:#fff"><h4>① CI/CD（GitHub Actions + OIDC）</h4>
+      <div class="row">
+        <div class="node"><span class="ic">🐙</span><b>GitHub Repo</b></div>
+        <div class="arrow">→</div>
+        <div class="node diff"><span class="ic">⚡</span><b>GitHub Actions</b></div>
+        <div class="arrow">→</div>
+        <div class="node new"><span class="ic">🪪</span><b>OIDC</b></div>
+        <div class="arrow">→</div>
+        <div class="node new"><span class="ic">🗳️</span><b>IAM Role</b><span class="meta">GitHubOIDCRole</span></div>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <div class="arrow">↓</div>
+        <div class="node purple"><span class="ic">🔨</span><b>CodeBuild</b><span class="meta">Docker Build</span></div>
+        <div class="arrow">→</div>
+        <div class="node purple"><span class="ic">📦</span><b>ECR</b><span class="meta">go-api-pr-18</span></div>
+      </div>
+      <div class="note">🔑 与已建区别：触发/鉴权用 <b>GHA + OIDC</b>（已建是 CodeBuild webhook）。</div>
+    </div>
+    <div class="grp" style="background:#fff"><h4>② PR 资源（共享 ALB + Rule）</h4>
+      <div class="stack">
+        <div class="node purple diff"><span class="ic">🧱</span><b>共享 ALB + ALB Rule</b><span class="meta">每 PR 一条转发规则</span></div>
+        <div class="node orange"><b>Task Definition</b></div>
+        <div class="node orange"><b>ECS Service</b></div>
+        <div class="node"><b>Target Group</b></div>
+        <div class="node green"><span class="ic">🗺️</span><b>Cloud Map</b></div>
+      </div>
+      <div class="note">🔑 与已建区别：每 PR <b>复用共享 ALB + listener rule</b>（已建是每 PR 独立 ALB → 更省）。</div>
+    </div>
+  </div>
+  <div class="two-col" style="margin-top:8px">
+    <div class="grp" style="background:#fff"><h4>③ Cloudflare 预览</h4>
+      <div class="row"><div class="node red new"><span class="ic">🔐</span><b>Cloudflare API Token</b></div><div class="arrow">→</div><div class="node orange"><span class="ic">📄</span><b>Cloudflare Pages Preview</b></div></div>
+    </div>
+    <div class="grp" style="background:#fff"><h4>④ 关 PR → 自动删</h4>
+      <div class="stack" style="font-size:11px">Close PR → 删 Task Def / Service / TG / ALB Rule / CloudMap<br>共享 ALB、VPC、ECR 保留</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Legend ============ -->
+<div class="legend">
+  <span><span class="badge-dot" style="background:var(--built)"></span>已建</span>
+  <span><span class="badge-dot" style="background:var(--target)"></span>目标/新增</span>
+  <span><span class="badge-dot" style="background:var(--orange)"></span>"不同"做法</span>
+  <span><span class="swatch" style="border-top-color:var(--blue)"></span>CloudMap 路径</span>
+  <span><span class="swatch" style="border-top-color:var(--purple)"></span>ALB 路径</span>
+  <span><span class="swatch" style="border-top-style:dashed;border-top-color:var(--gray)"></span>部署/拆除</span>
+  <span><span class="badge-dot" style="background:var(--red)"></span>安全相关</span>
+</div>
+<div class="note" style="margin-top:10px">本图为<b>文档对比</b>，未触发任何 AWS 资源创建 → 无费用。如需把目标架构的某部分真正落地（如 Secrets Manager 加固、共享 ALB rule 降本），可再单独做，做完冒烟验证即拆。</div>
+
+</body>
+</html>

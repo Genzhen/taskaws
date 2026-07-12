@@ -2,6 +2,7 @@
 node_modules
 .pnp
 .pnp.js
+.pnpm-store/
 
 # Build outputs
 dist
@@ -61,3 +62,11 @@ codex-review/
 
 # Local Claude Code overrides (per-machine MCP choices, never share)
 .claude/settings.local.json
+
+# Go
+*.exe
+/apps/intro-go/intro
+/apps/intro-go/intro.exe
+coverage.out
+coverage.html
+vendor/

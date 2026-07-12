@@ -15,6 +15,31 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      default:
+        aliases:
+          - postgres
+
+  intro-go:
+    build:
+      context: ./apps/intro-go
+    container_name: taskaws-intro-go
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_READER_URL: postgresql://postgres:password@postgres:5432/postgres
+      DB_SSLMODE: disable
+      CORS_ORIGIN: http://localhost:5173
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    networks:
+      - default
 
 volumes:
   postgres_data:
+
+networks:
+  default:
+    driver: bridge

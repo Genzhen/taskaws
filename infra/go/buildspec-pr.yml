@@ -107,10 +107,12 @@ phases:
       # --- Read shared resource IDs from the prod stack + role ARNs from pr-roles.
       - export CLUSTER="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='EcsClusterName'].OutputValue" --output text)"
       - export NS_ID="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='CloudMapNamespaceId'].OutputValue" --output text)"
-      - export PUBA="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetA'].OutputValue" --output text)"
-      - export PUBB="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetB'].OutputValue" --output text)"
+      - export ALB_LISTENER="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='SharedAlbListenerArn'].OutputValue" --output text)"
+      - export ALB_SG="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='SharedAlbSecurityGroupId'].OutputValue" --output text)"
+      - export ALB_DNS="$(aws cloudformation describe-stacks --stack-name "$PROD_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='SharedAlbDnsName'].OutputValue" --output text)"
       - export ROLE2="$(aws cloudformation describe-stacks --stack-name "$PR_ROLES_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='Role2Arn'].OutputValue" --output text)"
       - export ROLE3="$(aws cloudformation describe-stacks --stack-name "$PR_ROLES_STACK" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='Role3Arn'].OutputValue" --output text)"
+      - export HOST_DOMAIN="preview.taskaws.local"
       - export IMAGE="$ECR_REPO:pr-$PR_NUMBER"
       - echo "Built image will be $IMAGE"
 
@@ -177,6 +179,12 @@ phases:
       - export BACKEND_URL=""
       - export FRONTEND_URL=""
       # Deploy (or update) the per-PR stack using the pre-created CFN role.
+      # WHY host-header routing: the PR attaches a ListenerRule to the shared ALB
+      # keyed on pr-<N>.preview.taskaws.local. Reviewer access therefore needs
+      # wildcard DNS (*.preview.taskaws.local -> the shared ALB) plus a NAMED
+      # cloudflared tunnel per PR (quick tunnels cannot set the Host header, so
+      # the listener rule would never match). The stack itself deploys fine
+      # either way — only reviewer reachability depends on the DNS + tunnel.
       - |
         set +e
         aws cloudformation deploy \
@@ -193,16 +201,18 @@ phases:
             CorsOrigin="$CORS_ORIGIN" \
             EcsCluster="$CLUSTER" \
             CloudMapNamespaceId="$NS_ID" \
-            PublicSubnetA="$PUBA" \
-            PublicSubnetB="$PUBB"
+            AlbListenerArn="$ALB_LISTENER" \
+            AlbSecurityGroupId="$ALB_SG" \
+            HostDomain="$HOST_DOMAIN"
         DEPLOY_RC=$?
         set -e
         if [ "$DEPLOY_RC" -ne 0 ]; then
           echo "warn: cloudformation deploy failed (rc=$DEPLOY_RC); will still post a comment"
         fi
-      # Read back the ALB DNS from the deployed stack (empty if deploy failed).
-      - export ALB_DNS="$(aws cloudformation describe-stacks --stack-name "taskaws-go-pr-$PR_NUMBER" --region "$AWS_REGION" --query "Stacks[0].Outputs[?OutputKey=='AlbDnsUrl'].OutputValue" --output text 2>/dev/null || true)"
-      - echo "ALB_DNS=$ALB_DNS"
+      # ALB_DNS is the shared ALB DNS read from the prod stack in pre_build.
+      # The per-PR preview host is pr-<N>.<HOST_DOMAIN>, routed by the ListenerRule.
+      - export PREVIEW_HOST="pr-${PR_NUMBER}.${HOST_DOMAIN}"
+      - echo "ALB_DNS=$ALB_DNS PREVIEW_HOST=$PREVIEW_HOST"
       # --- Cloudflare quick tunnel → public https URL for the ALB.
       #    CAVEAT: the trycloudflare.com URL is only valid while cloudflared is
       #    running; it dies when the build container is torn down. Use a named

@@ -1,20 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: TaskAWS Go PER-PR preview stack. Deploys one PR's ALB + ECS service into the SHARED cluster, CloudMap namespace, and public subnets owned by the prod taskaws-go stack.
+Description: TaskAWS Go PER-PR preview stack. Deploys one PR ECS service behind the SHARED ALB from the prod stack via a host-header ListenerRule, into the shared ECS cluster and CloudMap namespace.
 
 # =============================================================================
-# WHY this stack imports shared resources instead of creating them:
-#   - Avoids CloudMap namespace collision (taskaws.local is a VPC-scoped
-#     resource that can only exist once per VPC).
-#   - Avoids public-subnet CIDR + route-table conflicts with the prod stack.
-#   - Avoids recreating the ECS cluster; all PR previews share one cluster
-#     to keep per-PR cost and blast radius small.
-#   - IAM roles are passed in from the Phase 3 roles stack so this template
-#     stays slim and dependency-free.
+# WHY this stack reuses the shared ALB instead of creating its own:
+#   - One internet-facing ALB per VPC is cheaper and avoids burning the limited
+#     ALB quota (default 50/listener rules is plenty; default 50 ALBs/VPC is not).
+#   - The prod stack owns ALB + listener; each PR attaches a single ListenerRule
+#     keyed on host-header pr-<N>.<HostDomain> and its own Target Group.
+#   - CloudMap namespace, ECS cluster, and IAM roles are shared too, keeping
+#     per-PR cost and blast radius small.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Parameters — shared resources are imported by reference (cross-stack via
-# Fn::ImportValue at deploy time, or passed as --parameter-overrides).
+# Parameters — shared resources are passed in from the prod stack outputs.
 # -----------------------------------------------------------------------------
 Parameters:
   VpcId:
@@ -23,11 +21,11 @@ Parameters:
     Default: vpc-0100e9f3e19120c53
   PrivateSubnetA:
     Type: AWS::EC2::Subnet::Id
-    Description: Existing private subnet (us-east-1a) where this PR's Fargate task lives
+    Description: Existing private subnet (us-east-1a) where this PR Fargate task lives
     Default: subnet-0952e2f162d9221c1
   PrivateSubnetB:
     Type: AWS::EC2::Subnet::Id
-    Description: Existing private subnet (us-east-1b) where this PR's Fargate task lives
+    Description: Existing private subnet (us-east-1b) where this PR Fargate task lives
     Default: subnet-02013ba8ad282d639
   DatabaseSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
@@ -46,7 +44,7 @@ Parameters:
     Description: ECR image for this PR (e.g. 977778967406.dkr.ecr.us-east-1.amazonaws.com/taskaws-go:pr-42)
   PrId:
     Type: String
-    Description: PR identifier used to suffix all resource names for isolation (e.g. 42)
+    Description: PR identifier used to suffix all resource names for isolation (e.g. 42). Also used as the ListenerRule priority.
   TaskRoleArn:
     Type: String
     Description: Pre-created ECS role ARN (Phase 3 roles stack) used for BOTH execution and task role
@@ -56,12 +54,16 @@ Parameters:
   CloudMapNamespaceId:
     Type: String
     Description: Id of the shared CloudMap private DNS namespace from the prod stack
-  PublicSubnetA:
-    Type: AWS::EC2::Subnet::Id
-    Description: Shared public subnet A Id from the prod stack (ALB placement)
-  PublicSubnetB:
-    Type: AWS::EC2::Subnet::Id
-    Description: Shared public subnet B Id from the prod stack (ALB placement)
+  AlbListenerArn:
+    Type: String
+    Description: ARN of the shared ALB HTTP listener from the prod stack (per-PR ListenerRule attaches here)
+  AlbSecurityGroupId:
+    Type: String
+    Description: Security group Id of the shared ALB from the prod stack (task ingress source on 8080)
+  HostDomain:
+    Type: String
+    Description: Base domain used for per-PR host-header routing (e.g. preview.taskaws.local). Reviewer access needs wildcard DNS resolving this domain to the shared ALB.
+    Default: 'preview.taskaws.local'
 
 # =============================================================================
 # Resources — every nameable resource is suffixed -pr-${PrId} so multiple PRs
@@ -70,43 +72,10 @@ Parameters:
 Resources:
 
   # ---------------------------------------------------------------------------
-  # ALB security group. Inbound 80 from anywhere; outbound 8080 only to the
-  # task SG. The reverse rule (task ingress from ALB) is a separate
-  # AWS::EC2::SecurityGroupIngress resource below to avoid the classic
-  # mutual-SG-reference circular dependency (same pattern as prod template).
+  # Target group — per-PR, target type ip so Fargate tasks register their ENI
+  # IP directly (awsvpc). The ListenerRule below forwards host-header traffic
+  # to this TG.
   # ---------------------------------------------------------------------------
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub 'taskaws-go-alb-pr-${PrId}'
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: HTTP from the internet
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          DestinationSecurityGroupId: !GetAtt TaskSecurityGroup.GroupId
-          Description: Forward to this PR Go intro tasks
-
-  Alb:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: !Sub 'taskaws-go-pr-${PrId}'
-      Scheme: internet-facing
-      Type: application
-      IpAddressType: ipv4
-      Subnets:
-        - !Ref PublicSubnetA
-        - !Ref PublicSubnetB
-      SecurityGroups:
-        - !GetAtt AlbSecurityGroup.GroupId
-
-  # Target type ip so Fargate tasks register their ENI IP directly (awsvpc).
   AlbTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -124,20 +93,28 @@ Resources:
       Matcher:
         HttpCode: '200'
 
-  AlbHttpListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
+  # ---------------------------------------------------------------------------
+  # ListenerRule — attaches to the SHARED listener from the prod stack. Matches
+  # host-header pr-<N>.<HostDomain> and forwards to this PR TargetGroup. PrId is
+  # numeric so it doubles as a unique rule priority (1-50000).
+  # ---------------------------------------------------------------------------
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
     Properties:
-      LoadBalancerArn: !Ref Alb
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
+      ListenerArn: !Ref AlbListenerArn
+      Priority: !Ref PrId
+      Conditions:
+        - Field: host-header
+          Values:
+            - !Sub 'pr-${PrId}.${HostDomain}'
+      Actions:
         - Type: forward
           TargetGroupArn: !Ref AlbTargetGroup
 
   # ---------------------------------------------------------------------------
   # Task security group. Egress 5432 (RDS) and 443 (GitHub) to anywhere.
-  # Inbound 8080 from the ALB is a separate ingress resource to break the
-  # ALB-SG <-> Task-SG mutual dependency.
+  # Inbound 8080 from the SHARED ALB SG is a separate ingress resource to break
+  # the ALB-SG <-> Task-SG mutual dependency.
   # ---------------------------------------------------------------------------
   TaskSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -159,15 +136,15 @@ Resources:
   TaskIngressFromAlb:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      Description: Allow this PR ALB to reach the Go intro tasks on 8080
+      Description: Allow the shared ALB to reach the Go intro tasks on 8080
       GroupId: !GetAtt TaskSecurityGroup.GroupId
       IpProtocol: tcp
       FromPort: 8080
       ToPort: 8080
-      SourceSecurityGroupId: !GetAtt AlbSecurityGroup.GroupId
+      SourceSecurityGroupId: !Ref AlbSecurityGroupId
 
   # ---------------------------------------------------------------------------
-  # RDS ingress — mirrors prod so this PR's task SG can reach Postgres 5432.
+  # RDS ingress — mirrors prod so this PR task SG can reach Postgres 5432.
   # ---------------------------------------------------------------------------
   DatabaseIngressFromGo:
     Type: AWS::EC2::SecurityGroupIngress
@@ -229,8 +206,8 @@ Resources:
               - 'wget -qO- http://localhost:8080/health || exit 1'
 
   # ---------------------------------------------------------------------------
-  # CloudMap service — registers this PR's task IP under the SHARED namespace
-  # so intro-pr-N.taskaws.local resolves to this preview's Fargate task.
+  # CloudMap service — registers this PR task IP under the SHARED namespace so
+  # intro-pr-N.taskaws.local resolves to this preview Fargate task.
   # ---------------------------------------------------------------------------
   CloudMapService:
     Type: AWS::ServiceDiscovery::Service
@@ -246,12 +223,12 @@ Resources:
 
   # ---------------------------------------------------------------------------
   # ECS service — runs in the shared cluster on existing private subnets,
-  # registers into the ALB target group and CloudMap. DependsOn the listener
-  # so the target group is wired before the service tries to register.
+  # registers into the per-PR ALB target group and CloudMap. DependsOn the
+  # ListenerRule so the routing rule exists before the service registers targets.
   # ---------------------------------------------------------------------------
   EcsService:
     Type: AWS::ECS::Service
-    DependsOn: AlbHttpListener
+    DependsOn: ListenerRule
     Properties:
       ServiceName: !Sub 'taskaws-go-pr-${PrId}'
       Cluster: !Ref EcsCluster
@@ -278,9 +255,9 @@ Resources:
 # Outputs
 # =============================================================================
 Outputs:
-  AlbDnsUrl:
-    Description: Public ALB URL for this PR preview
-    Value: !Sub 'http://${Alb.DNSName}'
+  PreviewHost:
+    Description: Host-header that routes to this PR preview through the shared ALB
+    Value: !Sub 'pr-${PrId}.${HostDomain}'
   CloudMapDnsName:
     Description: Private DNS name resolvable from within the VPC for this PR
     Value: !Sub 'intro-pr-${PrId}.taskaws.local'

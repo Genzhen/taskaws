@@ -471,3 +471,14 @@ Outputs:
   PublicSubnetB:
     Description: Public subnet B Id (shared by per-PR preview ALBs)
     Value: !Ref PublicSubnetB
+  # WHY exposed: per-PR stacks attach a ListenerRule to this listener and allow
+  # ingress from this SG instead of creating their own ALB.
+  SharedAlbListenerArn:
+    Description: ARN of the shared ALB HTTP listener (per-PR stacks attach rules here)
+    Value: !Ref AlbHttpListener
+  SharedAlbSecurityGroupId:
+    Description: Security group Id of the shared ALB (per-PR task ingress source)
+    Value: !GetAtt AlbSecurityGroup.GroupId
+  SharedAlbDnsName:
+    Description: DNS name of the shared ALB (per-PR preview host routes here)
+    Value: !GetAtt Alb.DNSName
